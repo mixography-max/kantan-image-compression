@@ -26,8 +26,8 @@ const App: React.FC = () => {
   return (
     <div className="app">
       <header>
-        <h1>かんたん画像圧縮くん</h1>
-        <span className="sub">ドラッグ&ドロップで画像・PDF・Office ファイルを圧縮</span>
+        <h1>☁️ かんたん画像圧縮くん</h1>
+        <span className="sub">見た目と違ってギュッと圧縮！</span>
       </header>
       <div className="main">
         <div className="left">

@@ -152,11 +152,11 @@ const DropZone: React.FC<Props> = ({ settings, onComplete }) => {
         className={`dropzone ${isDragOver ? 'dragover' : ''}`}
         onClick={handleClick}
       >
-        <div className="dropzone-icon">📁</div>
+        <div className="dropzone-icon">☁️</div>
         <p className="dropzone-text">
           {isDragOver
-            ? 'ここにドロップしてください…'
-            : 'ファイルをここにドラッグ＆ドロップ'}
+            ? 'ぽいっとはなしてね！'
+            : 'ファイルをここにドラッグ＆ドロップしてね'}
         </p>
         <p className="dropzone-sub">またはクリックして選択</p>
       </div>
