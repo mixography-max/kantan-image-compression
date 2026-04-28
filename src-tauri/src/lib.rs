@@ -338,7 +338,15 @@ fn compress_png(src: &Path, dst: &Path, colors: u32) -> Result<(), String> {
             &colors.to_string(),
             "--output", dst.to_str().unwrap(),
             "--", dst.to_str().unwrap(),
-        ])
+        ])?;
+
+        // Second pass: ECT (Efficient Compression Tool) for lossless optimization
+        let ect = resolve_tool("ect");
+        if tool_exists(&ect) {
+            // -9 = max compression, --strict = preserve correctness
+            let _ = run_tool(&ect, &["-9", "--strict", dst.to_str().unwrap()]);
+        }
+        Ok(())
     } else {
         // Fallback: just copy
         fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;

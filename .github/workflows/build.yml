@@ -17,12 +17,15 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macOS-arm64
+            ect_asset: ect-0.9.5-mac-arm64.zip
           - platform: macos-15
             target: x86_64-apple-darwin
             label: macOS-x64
+            ect_asset: ect-0.9.5-mac-x86-64.zip
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows-x64
+            ect_asset: ect-0.9.5-win64.zip
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -93,6 +96,17 @@ jobs:
             echo "✅ Copied GS resources from $GS_SHARE"
           fi
 
+          # Download ECT (Efficient Compression Tool)
+          ECT_URL="https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
+          curl -L -o /tmp/ect.zip "$ECT_URL"
+          unzip -o /tmp/ect.zip -d /tmp/ect
+          ECT_BIN=$(find /tmp/ect -name 'ect' -type f | head -1)
+          if [ -n "$ECT_BIN" ]; then
+            cp "$ECT_BIN" "$TOOLS_DIR/ect"
+            chmod +x "$TOOLS_DIR/ect"
+            echo "✅ Copied ECT"
+          fi
+
           # Function: bundle dylibs for a binary
           bundle_dylibs() {
             local bin="$1"
@@ -114,6 +128,7 @@ jobs:
           bundle_dylibs "$TOOLS_DIR/gs"
           bundle_dylibs "$TOOLS_DIR/pngquant"
           [ -f "$TOOLS_DIR/cjpegli" ] && bundle_dylibs "$TOOLS_DIR/cjpegli"
+          [ -f "$TOOLS_DIR/ect" ] && bundle_dylibs "$TOOLS_DIR/ect"
 
           # Fix inter-dylib references
           for lib in "$LIB_DIR"/*.dylib; do
@@ -131,7 +146,7 @@ jobs:
           done
 
           # Ad-hoc sign everything
-          for f in "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"; do
+          for f in "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/ect"; do
             [ -f "$f" ] && codesign --force --sign - "$f"
           done
           for lib in "$LIB_DIR"/*.dylib; do
@@ -206,7 +221,21 @@ jobs:
             Write-Host "⚠️ cjpegli not found in libjxl release"
           }
 
-          Write-Host "✅ Bundled tools:"
+          Write-Host "✅ Bundled tools (before ECT):"
+
+          # Download ECT (Efficient Compression Tool)
+          $ectUrl = "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
+          $ectZip = "$env:TEMP\ect.zip"
+          $ectExtract = "$env:TEMP\ect"
+          Invoke-WebRequest -Uri $ectUrl -OutFile $ectZip
+          Expand-Archive -Path $ectZip -DestinationPath $ectExtract -Force
+          $ectExe = Get-ChildItem $ectExtract -Recurse -Filter "ect.exe" | Select-Object -First 1
+          if ($ectExe) {
+            Copy-Item $ectExe.FullName "$toolsDir\ect.exe"
+            Write-Host "✅ Copied ECT"
+          }
+
+          Write-Host "✅ Final bundled tools:"
           Get-ChildItem "$toolsDir" -Recurse | Format-Table Name, Length
 
       - name: Build Tauri app (tag release)
