@@ -104,7 +104,7 @@ jobs:
           # ── Bundle dylibs via dylibbundler ──
           for t in gs pngquant cjpegli ect; do
             if [ -f "$TOOLS_DIR/$t" ]; then
-              dylibbundler -b -x "$TOOLS_DIR/$t" -d "$LIB_DIR" -p "@executable_path/lib"
+              dylibbundler -of -b -x "$TOOLS_DIR/$t" -d "$LIB_DIR" -p "@executable_path/lib"
             fi
           done
 
