@@ -18,7 +18,7 @@ jobs:
             target: aarch64-apple-darwin
             label: macOS-arm64
             ect_asset: ect-0.9.5-mac-arm64.zip
-          - platform: macos-15
+          - platform: macos-13
             target: x86_64-apple-darwin
             label: macOS-x64
             ect_asset: ect-0.9.5-mac-x86-64.zip
