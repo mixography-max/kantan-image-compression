@@ -2,21 +2,21 @@
 
 /* ── Design Tokens ── */
 :root {
-  --bg: #ffeef3;
-  --bg-secondary: #fffdf7;
+  --bg: #fff9f0;
+  --bg-secondary: #ffedd6;
   --card: #ffffff;
-  --card-hover: #fff3f6;
-  --accent: #88e0d0;
-  --accent-hover: #75c9bb;
-  --accent-glow: rgba(136, 224, 208, 0.4);
-  --success: #88e0d0;
-  --warning: #ffd93d;
-  --text: #5d4a4a;
-  --text-secondary: #8b7373;
-  --text-dim: #b8acac;
-  --radius: 20px;
+  --card-hover: #fff5eb;
+  --accent: #ff9f1c;
+  --accent-hover: #f3722c;
+  --accent-glow: rgba(255, 159, 28, 0.4);
+  --success: #ffb703;
+  --warning: #ffb703;
+  --text: #5c4033;
+  --text-secondary: #8b5a2b;
+  --text-dim: #cba382;
+  --radius: 24px;
   --radius-sm: 12px;
-  --shadow: 0 8px 24px rgba(255, 180, 195, 0.15);
+  --shadow: 0 8px 24px rgba(139, 90, 43, 0.1);
   --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -54,7 +54,7 @@ header h1 {
   margin: 0;
   font-size: 1.6rem;
   font-weight: 700;
-  color: #ff8c9e; /* Cute pastel pink */
+  color: #d97706; /* Warm brown/orange */
 }
 
 .sub {
@@ -95,7 +95,7 @@ header h1 {
 
 /* ── Drop Zone ── */
 .dropzone {
-  border: 3px dashed rgba(136, 224, 208, 0.6);
+  border: 4px dashed rgba(255, 159, 28, 0.4);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   padding: 3rem 2rem;
@@ -138,17 +138,28 @@ header h1 {
 }
 
 .dropzone-icon {
-  font-size: 3.5rem;
-  margin-bottom: 0.8rem;
+  width: 120px;
+  height: 120px;
+  margin: 0 auto 0.8rem auto;
   position: relative;
   z-index: 1;
-  filter: drop-shadow(0 4px 6px rgba(136, 224, 208, 0.4));
-  animation: bounce 2s infinite ease-in-out;
+  filter: drop-shadow(0 8px 12px rgba(139, 90, 43, 0.2));
+  animation: float 3s ease-in-out infinite;
+  display: block;
 }
 
-@keyframes bounce {
+.dropzone.dragover .dropzone-icon {
+  animation: bounceHamster 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-8px); }
+}
+
+@keyframes bounceHamster {
+  0% { transform: translateY(0) scale(1); }
+  100% { transform: translateY(-15px) scale(1.05); }
 }
 
 .dropzone-text {
@@ -176,7 +187,7 @@ header h1 {
   padding: 0.8rem 1.2rem;
   background: var(--card);
   border-radius: var(--radius-sm);
-  border: 2px dashed rgba(136, 224, 208, 0.6);
+  border: 2px dashed rgba(255, 159, 28, 0.6);
   animation: fadeIn 0.3s ease;
 }
 
@@ -188,7 +199,7 @@ header h1 {
 .spinner {
   width: 18px;
   height: 18px;
-  border: 3px solid rgba(136, 224, 208, 0.3);
+  border: 3px solid rgba(255, 159, 28, 0.3);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -306,4 +317,85 @@ header h1 {
   font-size: 0.85rem;
   color: var(--text-dim);
   margin-left: 0.5rem;
+}
+
+/* ── Setting Group (PDF) ── */
+.setting-group {
+  background: var(--bg-secondary);
+  border: 2px dashed rgba(255, 179, 198, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem 1rem 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.setting-group-title {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 0.6rem;
+}
+
+.setting-item select {
+  width: 100%;
+  padding: 0.5rem 0.8rem;
+  background: var(--card);
+  border: 2px solid rgba(255, 179, 198, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.85rem;
+  transition: border-color 0.2s;
+  cursor: pointer;
+}
+
+.setting-item select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ── Output Directory Picker ── */
+.output-dir-setting {
+  margin-bottom: 1.2rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px dashed rgba(255, 159, 28, 0.2);
+}
+
+.output-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.output-dir-path {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid rgba(255, 159, 28, 0.2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.output-dir-btn {
+  flex-shrink: 0;
+  padding: 0.45rem 0.8rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.output-dir-btn:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 2px 8px var(--accent-glow);
 }

@@ -4,17 +4,20 @@ import { CompressionResult } from './utils';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { open } from '@tauri-apps/plugin-dialog';
+import hamsterImg from './assets/hamster.png';
 
 interface Settings {
   jpegQuality: number;
   pngColors: number;
-  pdfPreset: string;
+  pdfDpi: number;
+  pdfJpegQ: number;
   officeQuality: number;
   group: boolean;
 }
 
 interface Props {
   settings: Settings;
+  outputDir: string;
   onComplete: (results: CompressionResult[]) => void;
 }
 
@@ -30,7 +33,7 @@ interface RustCompressResult {
   errorMessage: string | null;
 }
 
-const DropZone: React.FC<Props> = ({ settings, onComplete }) => {
+const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
   const [processing, setProcessing] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -73,7 +76,7 @@ const DropZone: React.FC<Props> = ({ settings, onComplete }) => {
         unlistenRef.current();
       }
     };
-  }, [settings]);
+  }, [settings, outputDir]);
 
   const handleFilePaths = async (paths: string[]) => {
     if (paths.length === 0) return;
@@ -81,17 +84,15 @@ const DropZone: React.FC<Props> = ({ settings, onComplete }) => {
     setProcessing(true);
     setStatusText(`圧縮中… ${paths.length}件`);
     try {
-      // Parse PDF preset
-      const [pdfDpi, pdfJpegQ] = settings.pdfPreset.split(',').map(Number);
-
       const rustResults = await invoke<RustCompressResult[]>('compress', {
         inputs: paths,
         settings: {
           jpegQuality: settings.jpegQuality,
           pngColors: settings.pngColors,
-          pdfDpi: pdfDpi || 235,
-          pdfJpegQ: pdfJpegQ || 82,
+          pdfDpi: settings.pdfDpi,
+          pdfJpegQ: settings.pdfJpegQ,
           officeQuality: settings.officeQuality,
+          outputDir: outputDir || undefined,
         },
       });
 
@@ -152,18 +153,18 @@ const DropZone: React.FC<Props> = ({ settings, onComplete }) => {
         className={`dropzone ${isDragOver ? 'dragover' : ''}`}
         onClick={handleClick}
       >
-        <div className="dropzone-icon">☁️</div>
+        <img src={hamsterImg} alt="ハムスター" className="dropzone-icon" />
         <p className="dropzone-text">
           {isDragOver
-            ? 'ぽいっとはなしてね！'
-            : 'ファイルをここにドラッグ＆ドロップしてね'}
+            ? 'わくわく！ひまわりの種かな？✨'
+            : 'ファイルをここに置いてね！🐹🌻'}
         </p>
         <p className="dropzone-sub">またはクリックして選択</p>
       </div>
       {processing && (
         <div className="processing-indicator">
           <div className="spinner"></div>
-          <span>{statusText || '圧縮中…'}</span>
+          <span>{statusText || 'もぐもぐ圧縮中...🐹💨'}</span>
         </div>
       )}
       {!processing && statusText && (

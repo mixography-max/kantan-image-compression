@@ -15,6 +15,7 @@ struct CompressSettings {
     pdf_dpi: Option<u32>,
     pdf_jpeg_q: Option<u32>,
     office_quality: Option<u32>,
+    output_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,15 +101,68 @@ fn tool_exists(path: &str) -> bool {
     false
 }
 
-fn output_dir() -> PathBuf {
+fn default_output_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string());
     #[cfg(not(target_os = "windows"))]
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
 
-    let dir = PathBuf::from(&home).join("Desktop").join("圧縮済み");
+    PathBuf::from(&home).join("Desktop").join("圧縮済み")
+}
+
+fn output_dir_from(custom: Option<&str>) -> PathBuf {
+    let dir = match custom {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => default_output_dir(),
+    };
     let _ = fs::create_dir_all(&dir);
     dir
+}
+
+// ---------------------------------------------------------------------------
+// Config persistence (saves output_dir to a JSON file)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct AppConfig {
+    output_dir: Option<String>,
+}
+
+fn config_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let home = std::env::var("APPDATA").unwrap_or_else(|_| {
+        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string())
+    });
+    #[cfg(target_os = "macos")]
+    let home = {
+        let h = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/Library/Application Support", h)
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let home = {
+        let h = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.config", h)
+    };
+
+    let dir = PathBuf::from(&home).join("kantan-image-compression");
+    let _ = fs::create_dir_all(&dir);
+    dir.join("config.json")
+}
+
+fn load_config() -> AppConfig {
+    let path = config_path();
+    if let Ok(data) = fs::read_to_string(&path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        AppConfig::default()
+    }
+}
+
+fn save_config(config: &AppConfig) {
+    let path = config_path();
+    if let Ok(json) = serde_json::to_string_pretty(config) {
+        let _ = fs::write(&path, json);
+    }
 }
 
 fn run_tool(exe: &str, args: &[&str]) -> Result<(), String> {
@@ -373,7 +427,7 @@ fn compress_office(src: &Path, dst: &Path, jpeg_quality: u32, png_colors: u32, f
 
 #[tauri::command]
 fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResult> {
-    let out_dir = output_dir();
+    let out_dir = output_dir_from(settings.output_dir.as_deref());
     let jpeg_q = settings.jpeg_quality.unwrap_or(85);
     let png_c = settings.png_colors.unwrap_or(256);
     let pdf_dpi = settings.pdf_dpi.unwrap_or(235);
@@ -454,6 +508,22 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
     results
 }
 
+#[tauri::command]
+fn get_output_dir() -> String {
+    let config = load_config();
+    match config.output_dir {
+        Some(ref d) if !d.is_empty() => d.clone(),
+        _ => default_output_dir().to_string_lossy().to_string(),
+    }
+}
+
+#[tauri::command]
+fn set_output_dir(path: String) {
+    let mut config = load_config();
+    config.output_dir = Some(path);
+    save_config(&config);
+}
+
 // ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
@@ -463,7 +533,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![compress])
+        .invoke_handler(tauri::generate_handler![compress, get_output_dir, set_output_dir])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
