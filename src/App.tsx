@@ -48,6 +48,17 @@ const App: React.FC = () => {
       <div className="main">
         <div className="left">
           <DropZone settings={settings} outputDir={outputDir} onComplete={handleCompression} />
+          <div className="algo-info">
+            <h3>🔧 圧縮アルゴリズム</h3>
+            <dl>
+              <dt>📸 JPEG</dt>
+              <dd><strong>Jpegli</strong>（Google開発）— 従来のJPEGと互換性を保ちながら、最新の心理視覚モデルで高品質・高圧縮を実現</dd>
+              <dt>🎨 PNG</dt>
+              <dd><strong>pngquant</strong>（減色）+ <strong>ECT</strong>（ロスレス再圧縮）の2段階最適化で最高水準のPNG圧縮</dd>
+              <dt>📄 PDF</dt>
+              <dd><strong>Ghostscript</strong> — 画像のダウンサンプリングとJPEG再圧縮でPDFを軽量化</dd>
+            </dl>
+          </div>
           {results.map((r, i) => (
             <ResultCard key={i} result={r} />
           ))}
