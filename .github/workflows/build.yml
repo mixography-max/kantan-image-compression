@@ -88,43 +88,57 @@ jobs:
           cd /tmp/libjxl
           git submodule update --init --recursive --depth 1 --jobs 4
           mkdir build && cd build
-          cmake -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            $CMAKE_ARCH_FLAG \
-            -DJPEGXL_ENABLE_JPEGLI=ON \
-            -DJPEGXL_ENABLE_TOOLS=OFF \
-            -DBUILD_TESTING=OFF \
-            -DJPEGXL_ENABLE_DOXYGEN=OFF \
-            -DJPEGXL_ENABLE_MANPAGES=OFF \
-            -DJPEGXL_ENABLE_BENCHMARK=OFF \
-            -DJPEGXL_ENABLE_EXAMPLES=OFF \
-            -DJPEGXL_ENABLE_SJPEG=OFF \
-            -DJPEGXL_ENABLE_OPENEXR=OFF \
-            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
-            -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=TRUE \
-            ..
-          # Build only jpegli library (avoids jxl_extras which needs system JPEG/PNG)
-          ninja -j$(sysctl -n hw.ncpu) jpegli-static
-          # Manually compile cjpegli tool against the built jpegli library
-          INCLUDE_DIRS="-I/tmp/libjxl -I/tmp/libjxl/lib/include -I/tmp/libjxl/build -I/tmp/libjxl/build/lib/include -I/tmp/libjxl/third_party/highway"
-          LIB_DIRS="-L/tmp/libjxl/build/lib -L/tmp/libjxl/build/third_party/highway"
-          c++ $CMAKE_ARCH_FLAG -O2 -std=c++17 \
-            $INCLUDE_DIRS \
-            /tmp/libjxl/tools/cjpegli.cc \
-            /tmp/libjxl/tools/tool_version.cc \
-            /tmp/libjxl/tools/file_io.cc \
-            $LIB_DIRS \
-            -ljpegli-static -lhwy \
-            -framework Accelerate \
-            -o "$TOOLS_DIR/cjpegli" 2>&1 || {
-            echo "⚠️ Manual cjpegli compile failed, trying ninja target..."
-            # Fallback: try the full build
-            ninja -j$(sysctl -n hw.ncpu) tools/cjpegli 2>&1 || true
-            if [ -f tools/cjpegli ]; then
-              cp tools/cjpegli "$TOOLS_DIR/cjpegli"
-            fi
-          }
-          echo "✅ Built and copied cjpegli from libjxl source"
+
+          if [ -n "$CMAKE_ARCH_FLAG" ]; then
+            # Cross-compile (x86_64 on ARM): build jpegli-static only, manually link cjpegli
+            cmake -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              $CMAKE_ARCH_FLAG \
+              -DJPEGXL_ENABLE_JPEGLI=ON \
+              -DJPEGXL_ENABLE_TOOLS=OFF \
+              -DBUILD_TESTING=OFF \
+              -DJPEGXL_ENABLE_DOXYGEN=OFF \
+              -DJPEGXL_ENABLE_MANPAGES=OFF \
+              -DJPEGXL_ENABLE_BENCHMARK=OFF \
+              -DJPEGXL_ENABLE_EXAMPLES=OFF \
+              -DJPEGXL_ENABLE_SJPEG=OFF \
+              -DJPEGXL_ENABLE_OPENEXR=OFF \
+              -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
+              -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=TRUE \
+              ..
+            ninja -j$(sysctl -n hw.ncpu) jpegli-static
+            # Find source files for cjpegli tool
+            CJPEGLI_SRC="/tmp/libjxl/tools/cjpegli.cc"
+            EXTRA_SRCS=""
+            for f in /tmp/libjxl/tools/tool_version.cc /tmp/libjxl/tools/file_io.cc \
+                     /tmp/libjxl/tools/speed_stats.cc /tmp/libjxl/tools/cmdline.cc; do
+              [ -f "$f" ] && EXTRA_SRCS="$EXTRA_SRCS $f"
+            done
+            INCLUDE_DIRS="-I/tmp/libjxl -I/tmp/libjxl/lib/include -I/tmp/libjxl/build -I/tmp/libjxl/build/lib/include -I/tmp/libjxl/third_party/highway"
+            LIB_DIRS="-L/tmp/libjxl/build/lib -L/tmp/libjxl/build/third_party/highway"
+            c++ -arch x86_64 -O2 -std=c++17 \
+              $INCLUDE_DIRS \
+              $CJPEGLI_SRC $EXTRA_SRCS \
+              $LIB_DIRS \
+              -ljpegli-static -lhwy \
+              -framework Accelerate \
+              -o "$TOOLS_DIR/cjpegli"
+          else
+            # Native build: standard approach
+            cmake -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DJPEGXL_ENABLE_JPEGLI=ON \
+              -DJPEGXL_ENABLE_TOOLS=ON \
+              -DBUILD_TESTING=OFF \
+              -DJPEGXL_ENABLE_DOXYGEN=OFF \
+              -DJPEGXL_ENABLE_MANPAGES=OFF \
+              -DJPEGXL_ENABLE_BENCHMARK=OFF \
+              -DJPEGXL_ENABLE_EXAMPLES=OFF \
+              ..
+            ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
+            cp tools/cjpegli "$TOOLS_DIR/cjpegli"
+          fi
+          chmod +x "$TOOLS_DIR/cjpegli"
 
           # Copy Ghostscript resource files (fonts, init, etc.)
           GS_SHARE="$($BREW --prefix ghostscript)/share/ghostscript"
