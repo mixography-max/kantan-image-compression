@@ -98,6 +98,8 @@ jobs:
             -DJPEGXL_ENABLE_MANPAGES=OFF \
             -DJPEGXL_ENABLE_BENCHMARK=OFF \
             -DJPEGXL_ENABLE_EXAMPLES=OFF \
+            -DJPEGXL_ENABLE_SJPEG=OFF \
+            -DJPEGXL_BUNDLE_LIBPNG=OFF \
             ..
           ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
           cp tools/cjpegli "$TOOLS_DIR/cjpegli"
