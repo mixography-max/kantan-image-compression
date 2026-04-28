@@ -117,7 +117,17 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
       if (results.length > 0) {
         onComplete(results);
       }
-      setStatusText(`✅ ${rustResults.length}件完了${errors.length > 0 ? ` (${errors.length}件エラー)` : ''}`);
+
+      if (errors.length > 0 && results.length === 0) {
+        // All files errored
+        const firstErr = errors[0];
+        setStatusText(`❌ エラー: ${firstErr.filename}\n${firstErr.errorMessage || '不明なエラー'}`);
+      } else if (errors.length > 0) {
+        const errNames = errors.map(e => e.filename).join(', ');
+        setStatusText(`✅ ${results.length}件完了 / ❌ ${errors.length}件エラー (${errNames})\n${errors[0].errorMessage || ''}`);
+      } else {
+        setStatusText(`✅ ${rustResults.length}件完了`);
+      }
     } catch (e) {
       console.error('Compression error', e);
       setStatusText(`❌ エラー: ${e}`);

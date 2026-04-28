@@ -194,6 +194,46 @@ fn make_tool_command(exe: &str) -> Command {
     cmd
 }
 
+/// Get current timestamp as string (without chrono crate)
+fn chrono_now() -> String {
+    use std::time::SystemTime;
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => format!("unix:{}", d.as_secs()),
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+/// Debug info about GS_LIB resolution
+fn gs_lib_debug() -> String {
+    let mut info = String::new();
+    if let Some(tools_dir) = bundled_tools_dir() {
+        let gs_res = tools_dir.join("gsresource");
+        info.push_str(&format!("gsresource dir: {:?} (exists: {})\n", gs_res, gs_res.exists()));
+        if gs_res.exists() {
+            fn list_dir_recursive(dir: &Path, depth: usize, out: &mut String) {
+                if depth > 3 { return; }
+                if let Ok(entries) = fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        let indent = "  ".repeat(depth);
+                        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        if p.is_dir() {
+                            out.push_str(&format!("{}{}/\n", indent, name));
+                            list_dir_recursive(&p, depth + 1, out);
+                        } else {
+                            out.push_str(&format!("{}{}\n", indent, name));
+                        }
+                    }
+                }
+            }
+            list_dir_recursive(&gs_res, 0, &mut info);
+        }
+    } else {
+        info.push_str("bundled_tools_dir: None\n");
+    }
+    info
+}
+
 fn default_output_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string());
@@ -624,6 +664,45 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                 });
             }
             Err(e) => {
+                // Save error report file
+                let report = format!(
+                    "=== はむはむ画像圧縮くん エラーレポート ===\n\
+                    日時: {}\n\
+                    ファイル: {}\n\
+                    入力パス: {}\n\
+                    出力先: {}\n\n\
+                    --- エラー詳細 ---\n{}\n\n\
+                    --- 環境情報 ---\n\
+                    OS: {}\n\
+                    ARCH: {}\n\
+                    gs パス: {}\n\
+                    pngquant パス: {}\n\
+                    cjpegli パス: {}\n\
+                    ect パス: {}\n\
+                    bundled_tools_dir: {:?}\n\
+                    gs 存在: {}\n\n\
+                    --- GS_LIB 確認 ---\n{}\n",
+                    chrono_now(),
+                    src.file_name().unwrap_or_default().to_string_lossy(),
+                    input,
+                    out_dir.display(),
+                    e,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    resolve_tool("gs"),
+                    resolve_tool("pngquant"),
+                    resolve_tool("cjpegli"),
+                    resolve_tool("ect"),
+                    bundled_tools_dir(),
+                    tool_exists(&resolve_tool("gs")),
+                    gs_lib_debug(),
+                );
+                let report_path = out_dir.join(format!(
+                    "error_report_{}.txt",
+                    src.file_stem().unwrap_or_default().to_string_lossy()
+                ));
+                let _ = fs::write(&report_path, &report);
+
                 results.push(CompressResult {
                     filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                     output_filename: String::new(),
@@ -632,7 +711,7 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                     compressed_size: 0,
                     reduction: 0.0,
                     is_error: true,
-                    error_message: Some(e),
+                    error_message: Some(format!("{}\n\nエラーレポート: {}", e, report_path.display())),
                 });
             }
         }

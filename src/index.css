@@ -228,13 +228,19 @@ header h1 {
 /* ── Processing Indicator ── */
 .processing-indicator {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.8rem;
   padding: 0.8rem 1.2rem;
   background: var(--card);
   border-radius: var(--radius-sm);
   border: 2px dashed rgba(255, 159, 28, 0.6);
   animation: fadeIn 0.3s ease;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 @keyframes fadeIn {
