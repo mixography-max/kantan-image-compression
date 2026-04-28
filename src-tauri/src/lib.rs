@@ -41,10 +41,17 @@ fn bundled_tools_dir() -> Option<PathBuf> {
     let exe_dir = exe.parent()?;
     #[cfg(target_os = "macos")]
     {
+        // macOS: Contents/MacOS/exe → Contents/Resources/resources/tools/
+        let dir = exe_dir.parent()?.join("Resources").join("resources").join("tools");
+        if dir.exists() { return Some(dir); }
+        // Fallback: map-style resources path
         Some(exe_dir.parent()?.join("Resources").join("tools"))
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // Windows: resources/tools/ next to exe
+        let dir = exe_dir.join("resources").join("tools");
+        if dir.exists() { return Some(dir); }
         Some(exe_dir.join("tools"))
     }
 }

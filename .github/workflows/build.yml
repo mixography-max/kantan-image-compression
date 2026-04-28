@@ -69,7 +69,7 @@ jobs:
           bundle_dylibs() {
             local bin="$1"
             # Find non-system dylibs
-            otool -L "$bin" | tail -n +2 | awk '{print $1}' | while read -r dylib; do
+            for dylib in $(otool -L "$bin" | tail -n +2 | awk '{print $1}'); do
               case "$dylib" in
                 /opt/homebrew/*|/usr/local/*)
                   local base
@@ -91,10 +91,9 @@ jobs:
           # Fix inter-dylib references
           for lib in "$LIB_DIR"/*.dylib; do
             [ -f "$lib" ] || continue
-            otool -L "$lib" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+            for dep in $(otool -L "$lib" | tail -n +2 | awk '{print $1}'); do
               case "$dep" in
                 /opt/homebrew/*|/usr/local/*)
-                  local dep_base
                   dep_base=$(basename "$dep")
                   if [ -f "$LIB_DIR/$dep_base" ]; then
                     install_name_tool -change "$dep" "@loader_path/$dep_base" "$lib" 2>/dev/null || true
@@ -120,30 +119,34 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Continue"
           $toolsDir = "src-tauri\resources\tools"
-          New-Item -ItemType Directory -Force -Path "$toolsDir\lib"
+          New-Item -ItemType Directory -Force -Path "$toolsDir\lib" | Out-Null
 
           # Install Ghostscript
           choco install ghostscript -y --no-progress
-          $gsDir = Get-ChildItem "C:\Program Files\gs" -Directory | Select-Object -Last 1
-          $gsExe = Join-Path $gsDir.FullName "bin\gswin64c.exe"
-          if (Test-Path $gsExe) {
-            Copy-Item $gsExe "$toolsDir\gs.exe"
-            # Copy GS DLLs
-            $gsBinDir = Join-Path $gsDir.FullName "bin"
-            Get-ChildItem "$gsBinDir\*.dll" | ForEach-Object { Copy-Item $_.FullName "$toolsDir\lib\" }
-            # Copy GS lib (Resource) directory for fonts/init
-            $gsLibDir = Join-Path $gsDir.FullName "lib"
-            if (Test-Path $gsLibDir) {
-              Copy-Item -Recurse $gsLibDir "$toolsDir\gslib"
+          $gsDirs = Get-ChildItem "C:\Program Files\gs" -Directory -ErrorAction SilentlyContinue
+          if ($gsDirs) {
+            $gsDir = $gsDirs | Select-Object -Last 1
+            $gsExe = Get-ChildItem $gsDir.FullName -Recurse -Filter "gswin64c.exe" | Select-Object -First 1
+            if ($gsExe) {
+              Copy-Item $gsExe.FullName "$toolsDir\gs.exe"
+              Write-Host "✅ Copied gs.exe"
+              # Copy GS DLL
+              $gsDll = Get-ChildItem $gsExe.Directory.FullName -Filter "gsdll64.dll" -ErrorAction SilentlyContinue
+              if ($gsDll) {
+                Copy-Item $gsDll.FullName "$toolsDir\lib\"
+                Write-Host "✅ Copied gsdll64.dll"
+              }
             }
           }
 
           # Install pngquant
           choco install pngquant -y --no-progress
-          $pqExe = (Get-Command pngquant -ErrorAction SilentlyContinue).Source
+          $pqExe = Get-Command pngquant -ErrorAction SilentlyContinue
           if ($pqExe) {
-            Copy-Item $pqExe "$toolsDir\pngquant.exe"
+            Copy-Item $pqExe.Source "$toolsDir\pngquant.exe"
+            Write-Host "✅ Copied pngquant.exe"
           }
 
           Write-Host "✅ Bundled tools:"
