@@ -47,24 +47,123 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # ── Bundle external tools (gs, pngquant) ──
+      - name: Bundle tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          brew install ghostscript pngquant
+
+          TOOLS_DIR="src-tauri/resources/tools"
+          LIB_DIR="$TOOLS_DIR/lib"
+          mkdir -p "$LIB_DIR"
+
+          # Copy binaries
+          GS_BIN="$(brew --prefix ghostscript)/bin/gs"
+          PQ_BIN="$(brew --prefix pngquant)/bin/pngquant"
+          cp "$GS_BIN" "$TOOLS_DIR/gs"
+          cp "$PQ_BIN" "$TOOLS_DIR/pngquant"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
+
+          # Function: bundle dylibs for a binary
+          bundle_dylibs() {
+            local bin="$1"
+            # Find non-system dylibs
+            otool -L "$bin" | tail -n +2 | awk '{print $1}' | while read -r dylib; do
+              case "$dylib" in
+                /opt/homebrew/*|/usr/local/*)
+                  local base
+                  base=$(basename "$dylib")
+                  if [ ! -f "$LIB_DIR/$base" ]; then
+                    cp "$dylib" "$LIB_DIR/$base"
+                    # Recursively bundle dependencies of this dylib
+                    bundle_dylibs "$LIB_DIR/$base"
+                  fi
+                  install_name_tool -change "$dylib" "@executable_path/lib/$base" "$bin" 2>/dev/null || true
+                  ;;
+              esac
+            done
+          }
+
+          bundle_dylibs "$TOOLS_DIR/gs"
+          bundle_dylibs "$TOOLS_DIR/pngquant"
+
+          # Fix inter-dylib references
+          for lib in "$LIB_DIR"/*.dylib; do
+            [ -f "$lib" ] || continue
+            otool -L "$lib" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+              case "$dep" in
+                /opt/homebrew/*|/usr/local/*)
+                  local dep_base
+                  dep_base=$(basename "$dep")
+                  if [ -f "$LIB_DIR/$dep_base" ]; then
+                    install_name_tool -change "$dep" "@loader_path/$dep_base" "$lib" 2>/dev/null || true
+                  fi
+                  ;;
+              esac
+            done
+          done
+
+          # Ad-hoc sign everything
+          codesign --force --sign - "$TOOLS_DIR/gs"
+          codesign --force --sign - "$TOOLS_DIR/pngquant"
+          for lib in "$LIB_DIR"/*.dylib; do
+            [ -f "$lib" ] || continue
+            codesign --force --sign - "$lib"
+          done
+
+          echo "✅ Bundled tools:"
+          ls -la "$TOOLS_DIR/"
+          ls -la "$LIB_DIR/" || true
+
+      - name: Bundle tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $toolsDir = "src-tauri\resources\tools"
+          New-Item -ItemType Directory -Force -Path "$toolsDir\lib"
+
+          # Install Ghostscript
+          choco install ghostscript -y --no-progress
+          $gsDir = Get-ChildItem "C:\Program Files\gs" -Directory | Select-Object -Last 1
+          $gsExe = Join-Path $gsDir.FullName "bin\gswin64c.exe"
+          if (Test-Path $gsExe) {
+            Copy-Item $gsExe "$toolsDir\gs.exe"
+            # Copy GS DLLs
+            $gsBinDir = Join-Path $gsDir.FullName "bin"
+            Get-ChildItem "$gsBinDir\*.dll" | ForEach-Object { Copy-Item $_.FullName "$toolsDir\lib\" }
+            # Copy GS lib (Resource) directory for fonts/init
+            $gsLibDir = Join-Path $gsDir.FullName "lib"
+            if (Test-Path $gsLibDir) {
+              Copy-Item -Recurse $gsLibDir "$toolsDir\gslib"
+            }
+          }
+
+          # Install pngquant
+          choco install pngquant -y --no-progress
+          $pqExe = (Get-Command pngquant -ErrorAction SilentlyContinue).Source
+          if ($pqExe) {
+            Copy-Item $pqExe "$toolsDir\pngquant.exe"
+          }
+
+          Write-Host "✅ Bundled tools:"
+          Get-ChildItem "$toolsDir" -Recurse | Format-Table Name, Length
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "かんたん画像圧縮くん ${{ github.ref_name }}"
+          releaseName: "はむはむ画像圧縮くん ${{ github.ref_name }}"
           releaseBody: |
             ## ダウンロード
             - **macOS (Apple Silicon)**: `.dmg` ファイル (arm64)
             - **macOS (Intel)**: `.dmg` ファイル (x64)
             - **Windows**: `.msi` または `.exe` インストーラー
 
-            ## 必要な外部ツール
-            圧縮にはこちらのツールが必要です（インストール済みでない場合）:
-            - **JPEG**: cjpegli（なければ macOS: sips / Windows: 未対応）
-            - **PNG**: pngquant
-            - **PDF**: Ghostscript (gs)
+            PDF圧縮（Ghostscript）・PNG圧縮（pngquant）ツールは同梱されています。
+            追加のインストールは不要です。🐹
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}

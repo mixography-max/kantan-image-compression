@@ -32,11 +32,36 @@ struct CompressResult {
 }
 
 // ---------------------------------------------------------------------------
-// Tool resolution – cross-platform
+// Tool resolution – cross-platform (bundled tools have priority)
 // ---------------------------------------------------------------------------
 
+/// Returns the directory where bundled tools are placed at runtime.
+fn bundled_tools_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    #[cfg(target_os = "macos")]
+    {
+        Some(exe_dir.parent()?.join("Resources").join("tools"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(exe_dir.join("tools"))
+    }
+}
+
 fn resolve_tool(name: &str) -> String {
-    // Check platform-specific paths
+    // 1. Check bundled tools first
+    if let Some(tools_dir) = bundled_tools_dir() {
+        let bundled = if cfg!(windows) {
+            tools_dir.join(format!("{}.exe", name))
+        } else {
+            tools_dir.join(name)
+        };
+        if bundled.exists() {
+            return bundled.to_string_lossy().to_string();
+        }
+    }
+    // 2. Check platform-specific system paths
     #[cfg(target_os = "macos")]
     {
         let candidates = [
@@ -50,7 +75,6 @@ fn resolve_tool(name: &str) -> String {
             }
         }
     }
-
     #[cfg(target_os = "windows")]
     {
         let home = std::env::var("USERPROFILE").unwrap_or_default();
@@ -65,7 +89,6 @@ fn resolve_tool(name: &str) -> String {
                 return c.clone();
             }
         }
-        // On Windows, also try to find in PATH
         if let Ok(output) = Command::new("where").arg(name).output() {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout);
@@ -77,7 +100,6 @@ fn resolve_tool(name: &str) -> String {
             }
         }
     }
-
     name.to_string()
 }
 
@@ -85,7 +107,6 @@ fn tool_exists(path: &str) -> bool {
     if Path::new(path).exists() {
         return true;
     }
-    // On Windows, also check if it's in PATH
     #[cfg(target_os = "windows")]
     {
         if let Ok(output) = Command::new("where").arg(path).output() {
@@ -99,6 +120,32 @@ fn tool_exists(path: &str) -> bool {
         }
     }
     false
+}
+
+/// Check if the given tool path points to a bundled tool.
+fn is_bundled(path: &str) -> bool {
+    if let Some(tools_dir) = bundled_tools_dir() {
+        Path::new(path).starts_with(&tools_dir)
+    } else {
+        false
+    }
+}
+
+/// Build a Command, adding DYLD_LIBRARY_PATH for bundled tools on macOS.
+fn make_tool_command(exe: &str) -> Command {
+    let mut cmd = Command::new(exe);
+    if is_bundled(exe) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(tools_dir) = bundled_tools_dir() {
+                let lib_dir = tools_dir.join("lib");
+                if lib_dir.exists() {
+                    cmd.env("DYLD_LIBRARY_PATH", &lib_dir);
+                }
+            }
+        }
+    }
+    cmd
 }
 
 fn default_output_dir() -> PathBuf {
@@ -166,7 +213,7 @@ fn save_config(config: &AppConfig) {
 }
 
 fn run_tool(exe: &str, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(exe)
+    let output = make_tool_command(exe)
         .args(args)
         .output()
         .map_err(|e| format!("{} の実行に失敗: {}", exe, e))?;
@@ -178,7 +225,7 @@ fn run_tool(exe: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn run_tool_with_cwd(exe: &str, args: &[&str], cwd: &str) -> Result<(), String> {
-    let output = Command::new(exe)
+    let output = make_tool_command(exe)
         .args(args)
         .current_dir(cwd)
         .output()
