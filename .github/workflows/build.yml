@@ -83,21 +83,14 @@ jobs:
           chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
 
           # Build cjpegli from libjxl source
-          $BREW install cmake ninja libpng
+          $BREW install cmake ninja
           git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl
           cd /tmp/libjxl
           git submodule update --init --recursive --depth 1 --jobs 4
           mkdir build && cd build
-          # Set prefix path for cross-compile to find correct x86_64 libraries
-          if [ -n "$CMAKE_ARCH_FLAG" ]; then
-            CMAKE_PREFIX="-DCMAKE_PREFIX_PATH=$($BREW --prefix)"
-          else
-            CMAKE_PREFIX=""
-          fi
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             $CMAKE_ARCH_FLAG \
-            $CMAKE_PREFIX \
             -DJPEGXL_ENABLE_JPEGLI=ON \
             -DJPEGXL_ENABLE_TOOLS=ON \
             -DBUILD_TESTING=OFF \
@@ -107,6 +100,7 @@ jobs:
             -DJPEGXL_ENABLE_EXAMPLES=OFF \
             -DJPEGXL_ENABLE_SJPEG=OFF \
             -DJPEGXL_ENABLE_OPENEXR=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
             ..
           ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
           cp tools/cjpegli "$TOOLS_DIR/cjpegli"
