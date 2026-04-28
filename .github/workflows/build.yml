@@ -47,12 +47,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # ── Bundle external tools (gs, pngquant) ──
+      # ── Bundle external tools (gs, pngquant, cjpegli) ──
       - name: Bundle tools (macOS)
         if: runner.os == 'macOS'
         run: |
           set -e
-          brew install ghostscript pngquant
+          brew install ghostscript pngquant jpeg-xl
 
           TOOLS_DIR="src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
@@ -61,14 +61,22 @@ jobs:
           # Copy binaries
           GS_BIN="$(brew --prefix ghostscript)/bin/gs"
           PQ_BIN="$(brew --prefix pngquant)/bin/pngquant"
+          CJ_BIN="$(brew --prefix jpeg-xl)/bin/cjpegli"
           cp "$GS_BIN" "$TOOLS_DIR/gs"
           cp "$PQ_BIN" "$TOOLS_DIR/pngquant"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
+          cp "$CJ_BIN" "$TOOLS_DIR/cjpegli"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"
+
+          # Copy Ghostscript resource files (fonts, init, etc.)
+          GS_SHARE="$(brew --prefix ghostscript)/share/ghostscript"
+          if [ -d "$GS_SHARE" ]; then
+            cp -R "$GS_SHARE" "$TOOLS_DIR/gsresource"
+            echo "✅ Copied GS resources from $GS_SHARE"
+          fi
 
           # Function: bundle dylibs for a binary
           bundle_dylibs() {
             local bin="$1"
-            # Find non-system dylibs
             for dylib in $(otool -L "$bin" | tail -n +2 | awk '{print $1}'); do
               case "$dylib" in
                 /opt/homebrew/*|/usr/local/*)
@@ -76,7 +84,6 @@ jobs:
                   base=$(basename "$dylib")
                   if [ ! -f "$LIB_DIR/$base" ]; then
                     cp "$dylib" "$LIB_DIR/$base"
-                    # Recursively bundle dependencies of this dylib
                     bundle_dylibs "$LIB_DIR/$base"
                   fi
                   install_name_tool -change "$dylib" "@executable_path/lib/$base" "$bin" 2>/dev/null || true
@@ -87,6 +94,7 @@ jobs:
 
           bundle_dylibs "$TOOLS_DIR/gs"
           bundle_dylibs "$TOOLS_DIR/pngquant"
+          bundle_dylibs "$TOOLS_DIR/cjpegli"
 
           # Fix inter-dylib references
           for lib in "$LIB_DIR"/*.dylib; do
@@ -104,8 +112,9 @@ jobs:
           done
 
           # Ad-hoc sign everything
-          codesign --force --sign - "$TOOLS_DIR/gs"
-          codesign --force --sign - "$TOOLS_DIR/pngquant"
+          for f in "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"; do
+            codesign --force --sign - "$f"
+          done
           for lib in "$LIB_DIR"/*.dylib; do
             [ -f "$lib" ] || continue
             codesign --force --sign - "$lib"
@@ -113,7 +122,10 @@ jobs:
 
           echo "✅ Bundled tools:"
           ls -la "$TOOLS_DIR/"
+          echo "┅┅ lib/:"
           ls -la "$LIB_DIR/" || true
+          echo "┅┅ gsresource/:"
+          du -sh "$TOOLS_DIR/gsresource/" 2>/dev/null || true
 
       - name: Bundle tools (Windows)
         if: runner.os == 'Windows'
@@ -138,6 +150,18 @@ jobs:
                 Copy-Item $gsDll.FullName "$toolsDir\lib\"
                 Write-Host "✅ Copied gsdll64.dll"
               }
+              # Copy GS Resource directory (fonts, init, etc.)
+              $gsResource = Join-Path $gsDir.FullName "Resource"
+              if (Test-Path $gsResource) {
+                Copy-Item -Recurse $gsResource "$toolsDir\gsresource\Resource"
+                Write-Host "✅ Copied GS Resource dir"
+              }
+              $gsLib = Join-Path $gsDir.FullName "lib"
+              if (Test-Path $gsLib) {
+                New-Item -ItemType Directory -Force -Path "$toolsDir\gsresource\lib" | Out-Null
+                Copy-Item "$gsLib\*" "$toolsDir\gsresource\lib\" -ErrorAction SilentlyContinue
+                Write-Host "✅ Copied GS lib dir"
+              }
             }
           }
 
@@ -147,6 +171,16 @@ jobs:
           if ($pqExe) {
             Copy-Item $pqExe.Source "$toolsDir\pngquant.exe"
             Write-Host "✅ Copied pngquant.exe"
+          }
+
+          # Install libjxl (cjpegli)
+          choco install libjxl -y --no-progress
+          $cjExe = Get-Command cjpegli -ErrorAction SilentlyContinue
+          if ($cjExe) {
+            Copy-Item $cjExe.Source "$toolsDir\cjpegli.exe"
+            Write-Host "✅ Copied cjpegli.exe"
+          } else {
+            Write-Host "⚠️ cjpegli not found, JPEG will use fallback"
           }
 
           Write-Host "✅ Bundled tools:"
@@ -166,7 +200,7 @@ jobs:
             - **macOS (Intel)**: `.dmg` ファイル (x64)
             - **Windows**: `.msi` または `.exe` インストーラー
 
-            PDF圧縮（Ghostscript）・PNG圧縮（pngquant）ツールは同梱されています。
+            PDF圧縮（Ghostscript）・PNG圧縮（pngquant）・JPEG圧縮（cjpegli）ツールは同梱されています。
             追加のインストールは不要です。🐹
           releaseDraft: true
           prerelease: false

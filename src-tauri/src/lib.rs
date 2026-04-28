@@ -138,16 +138,53 @@ fn is_bundled(path: &str) -> bool {
     }
 }
 
-/// Build a Command, adding DYLD_LIBRARY_PATH for bundled tools on macOS.
+/// Build a Command, adding library paths and GS_LIB for bundled tools.
 fn make_tool_command(exe: &str) -> Command {
     let mut cmd = Command::new(exe);
     if is_bundled(exe) {
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(tools_dir) = bundled_tools_dir() {
-                let lib_dir = tools_dir.join("lib");
+        if let Some(tools_dir) = bundled_tools_dir() {
+            // Set library loading path for bundled dylibs/DLLs
+            let lib_dir = tools_dir.join("lib");
+            #[cfg(target_os = "macos")]
+            {
                 if lib_dir.exists() {
                     cmd.env("DYLD_LIBRARY_PATH", &lib_dir);
+                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                if lib_dir.exists() {
+                    // Prepend lib dir to PATH for DLL loading
+                    let path = std::env::var("PATH").unwrap_or_default();
+                    cmd.env("PATH", format!("{};{}", lib_dir.to_string_lossy(), path));
+                }
+            }
+
+            // Set GS_LIB for Ghostscript resource files
+            let gs_res = tools_dir.join("gsresource");
+            if gs_res.exists() {
+                // Collect all subdirectories that might contain gs init/resource files
+                let mut gs_lib_paths: Vec<String> = Vec::new();
+                // macOS: gsresource/<version>/ contains Resource, lib
+                // Windows: gsresource/Resource, gsresource/lib
+                if let Ok(entries) = fs::read_dir(&gs_res) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            // Add the directory itself and common subdirs
+                            let resource = p.join("Resource");
+                            let lib = p.join("lib");
+                            let init = p.join("Resource").join("Init");
+                            if resource.exists() { gs_lib_paths.push(resource.to_string_lossy().to_string()); }
+                            if lib.exists() { gs_lib_paths.push(lib.to_string_lossy().to_string()); }
+                            if init.exists() { gs_lib_paths.push(init.to_string_lossy().to_string()); }
+                            gs_lib_paths.push(p.to_string_lossy().to_string());
+                        }
+                    }
+                }
+                if !gs_lib_paths.is_empty() {
+                    let sep = if cfg!(windows) { ";" } else { ":" };
+                    cmd.env("GS_LIB", gs_lib_paths.join(sep));
                 }
             }
         }
