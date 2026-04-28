@@ -128,71 +128,51 @@ jobs:
       # ═══════════════════════════════════════════════════════════════
       - name: Bundle tools (macOS x64)
         if: matrix.target == 'x86_64-apple-darwin'
+        env:
+          ECT_ASSET: ${{ matrix.ect_asset }}
         run: |
-          set -e
+          arch -x86_64 /bin/bash -e << 'EOF'
+          export PATH="/usr/local/bin:$PATH"
           TOOLS_DIR="$(pwd)/src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
           mkdir -p "$LIB_DIR"
 
           # ── Install x86_64 Homebrew via Rosetta 2 ──
-          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
-          BREW="/usr/local/bin/brew"
+          if [ ! -f "/usr/local/bin/brew" ]; then
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+          fi
 
-          $BREW install ghostscript pngquant cmake ninja
+          brew install ghostscript pngquant cmake ninja
 
-          cp "$($BREW --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
-          cp "$($BREW --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
+          cp "$(brew --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
+          cp "$(brew --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
           chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
 
-          # ── Build cjpegli for x86_64 ──
-          # Step 1: Build jpegli-static library only (avoids jxl_extras JPEG/PNG issues)
+          # ── Build cjpegli natively under Rosetta 2 ──
           git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl
           cd /tmp/libjxl && git submodule update --init --recursive --depth 1 --jobs 4
           mkdir build && cd build
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DJPEGXL_ENABLE_JPEGLI=ON \
-            -DJPEGXL_ENABLE_TOOLS=OFF \
+            -DJPEGXL_ENABLE_TOOLS=ON \
             -DBUILD_TESTING=OFF \
             -DJPEGXL_ENABLE_DOXYGEN=OFF \
             -DJPEGXL_ENABLE_MANPAGES=OFF \
             -DJPEGXL_ENABLE_BENCHMARK=OFF \
             -DJPEGXL_ENABLE_EXAMPLES=OFF \
-            -DJPEGXL_ENABLE_SJPEG=OFF \
-            -DJPEGXL_ENABLE_OPENEXR=OFF \
-            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
-            -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=TRUE \
             ..
-          ninja -j$(sysctl -n hw.ncpu) jpegli-static
-          echo "✅ jpegli-static built for x86_64"
-
-          # Step 2: Manually compile cjpegli tool against jpegli-static
-          SRCS="/tmp/libjxl/tools/cjpegli.cc"
-          for f in /tmp/libjxl/tools/tool_version.cc /tmp/libjxl/tools/file_io.cc \
-                   /tmp/libjxl/tools/speed_stats.cc /tmp/libjxl/tools/cmdline.cc; do
-            [ -f "$f" ] && SRCS="$SRCS $f"
-          done
-          echo "Source files: $SRCS"
-          c++ -arch x86_64 -O2 -std=c++17 \
-            -DJPEGXL_VERSION=\"0.11.2\" \
-            -I/tmp/libjxl -I/tmp/libjxl/lib/include \
-            -I/tmp/libjxl/build -I/tmp/libjxl/build/lib/include \
-            -I/tmp/libjxl/third_party/highway \
-            $SRCS \
-            -L/tmp/libjxl/build/lib -L/tmp/libjxl/build/third_party/highway \
-            -ljpegli-static -lhwy \
-            -framework Accelerate \
-            -o "$TOOLS_DIR/cjpegli"
+          ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
+          cp tools/cjpegli "$TOOLS_DIR/cjpegli"
           chmod +x "$TOOLS_DIR/cjpegli"
-          echo "✅ cjpegli built for x86_64"
+          echo "✅ cjpegli built natively for x86_64 via Rosetta 2"
 
           # ── GS resources ──
-          GS_SHARE="$($BREW --prefix ghostscript)/share/ghostscript"
+          GS_SHARE="$(brew --prefix ghostscript)/share/ghostscript"
           [ -d "$GS_SHARE" ] && cp -R "$GS_SHARE" "$TOOLS_DIR/gsresource"
 
           # ── ECT ──
-          curl -L -o /tmp/ect.zip "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
+          curl -L -o /tmp/ect.zip "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${ECT_ASSET}"
           unzip -o /tmp/ect.zip -d /tmp/ect
           ECT_BIN=$(find /tmp/ect -name 'ect' -type f | head -1)
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
@@ -222,6 +202,7 @@ jobs:
           for f in "$TOOLS_DIR"/{gs,pngquant,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           echo "✅ x64 bundle complete"; ls -la "$TOOLS_DIR/"
+          EOF
 
       # ═══════════════════════════════════════════════════════════════
       # Windows
