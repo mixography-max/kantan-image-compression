@@ -52,7 +52,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -e
-          brew install ghostscript pngquant
+          brew install ghostscript pngquant cmake brotli
 
           TOOLS_DIR="src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
@@ -65,18 +65,25 @@ jobs:
           cp "$PQ_BIN" "$TOOLS_DIR/pngquant"
           chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
 
-          # Try to get cjpegli (not in Homebrew, download prebuilt or skip)
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "x86_64" ]; then
-            JXL_URL="https://github.com/libjxl/libjxl/releases/download/v0.11.2/jxl-linux-x86_64-static.zip"
-          fi
-          # Try system-installed cjpegli first
-          if command -v cjpegli &>/dev/null; then
-            cp "$(command -v cjpegli)" "$TOOLS_DIR/cjpegli"
+          # Build cjpegli from libjxl source
+          echo "🔨 Building cjpegli from source..."
+          git clone --depth 1 --recursive --shallow-submodules https://github.com/libjxl/libjxl.git /tmp/libjxl
+          mkdir -p /tmp/libjxl/build && cd /tmp/libjxl/build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_TESTING=OFF \
+                -DJPEGXL_ENABLE_BENCHMARK=OFF \
+                -DJPEGXL_ENABLE_EXAMPLES=OFF \
+                -DJPEGXL_ENABLE_SJPEG=OFF \
+                -DJPEGXL_ENABLE_MANPAGES=OFF \
+                ..
+          cmake --build . --target cjpegli -- -j$(sysctl -n hw.ncpu)
+          cd -
+          if [ -f /tmp/libjxl/build/tools/cjpegli ]; then
+            cp /tmp/libjxl/build/tools/cjpegli "$TOOLS_DIR/cjpegli"
             chmod +x "$TOOLS_DIR/cjpegli"
-            echo "✅ cjpegli found in system PATH"
+            echo "✅ cjpegli built successfully"
           else
-            echo "⚠️ cjpegli not available on macOS, JPEG will use sips fallback"
+            echo "⚠️ cjpegli build failed, JPEG will use sips fallback"
           fi
 
           # Copy Ghostscript resource files (fonts, init, etc.)
