@@ -18,7 +18,7 @@ jobs:
             target: aarch64-apple-darwin
             label: macOS-arm64
             ect_asset: ect-0.9.5-mac-arm64.zip
-          - platform: macos-13
+          - platform: macos-14
             target: x86_64-apple-darwin
             label: macOS-x64
             ect_asset: ect-0.9.5-mac-x86-64.zip
@@ -50,32 +50,47 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # ── Bundle external tools (gs, pngquant, cjpegli) ──
+      # ── Bundle external tools (gs, pngquant, cjpegli, ect) ──
       - name: Bundle tools (macOS)
         if: runner.os == 'macOS'
         run: |
           set -e
-          brew install ghostscript pngquant
-
+          TARGET="${{ matrix.target }}"
           TOOLS_DIR="$(pwd)/src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
           mkdir -p "$LIB_DIR"
 
+          # Determine if cross-compiling (x86_64 on ARM runner)
+          if [ "$TARGET" = "x86_64-apple-darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+            echo "🔄 Cross-compiling for x86_64: installing x86_64 Homebrew via Rosetta 2"
+            # Install x86_64 Homebrew under /usr/local
+            arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+            BREW="/usr/local/bin/brew"
+            CMAKE_ARCH_FLAG="-DCMAKE_OSX_ARCHITECTURES=x86_64"
+          else
+            BREW="$(which brew)"
+            CMAKE_ARCH_FLAG=""
+          fi
+
+          # Install tools via the correct Homebrew
+          $BREW install ghostscript pngquant
+
           # Copy binaries
-          GS_BIN="$(brew --prefix ghostscript)/bin/gs"
-          PQ_BIN="$(brew --prefix pngquant)/bin/pngquant"
+          GS_BIN="$($BREW --prefix ghostscript)/bin/gs"
+          PQ_BIN="$($BREW --prefix pngquant)/bin/pngquant"
           cp "$GS_BIN" "$TOOLS_DIR/gs"
           cp "$PQ_BIN" "$TOOLS_DIR/pngquant"
           chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
 
-          # Build cjpegli from libjxl source (not available as Homebrew binary)
-          brew install cmake ninja
+          # Build cjpegli from libjxl source
+          $BREW install cmake ninja
           git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl
           cd /tmp/libjxl
           git submodule update --init --recursive --depth 1 --jobs 4
           mkdir build && cd build
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            $CMAKE_ARCH_FLAG \
             -DJPEGXL_ENABLE_JPEGLI=ON \
             -DJPEGXL_ENABLE_TOOLS=ON \
             -DBUILD_TESTING=OFF \
@@ -90,7 +105,7 @@ jobs:
           echo "✅ Built and copied cjpegli from libjxl source"
 
           # Copy Ghostscript resource files (fonts, init, etc.)
-          GS_SHARE="$(brew --prefix ghostscript)/share/ghostscript"
+          GS_SHARE="$($BREW --prefix ghostscript)/share/ghostscript"
           if [ -d "$GS_SHARE" ]; then
             cp -R "$GS_SHARE" "$TOOLS_DIR/gsresource"
             echo "✅ Copied GS resources from $GS_SHARE"
