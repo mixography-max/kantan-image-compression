@@ -131,7 +131,9 @@ jobs:
         env:
           ECT_ASSET: ${{ matrix.ect_asset }}
         run: |
-          arch -x86_64 /bin/bash -e << 'EOF'
+          cat << 'EOF' > build_x64.sh
+          #!/bin/bash
+          set -e
           export PATH="/usr/local/bin:$PATH"
           TOOLS_DIR="$(pwd)/src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
@@ -142,15 +144,15 @@ jobs:
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
           fi
 
-          brew install ghostscript pngquant cmake ninja
+          brew install ghostscript pngquant cmake ninja </dev/null
 
           cp "$(brew --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
           cp "$(brew --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
           chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
 
           # ── Build cjpegli natively under Rosetta 2 ──
-          git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl
-          cd /tmp/libjxl && git submodule update --init --recursive --depth 1 --jobs 4
+          git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl </dev/null
+          cd /tmp/libjxl && git submodule update --init --recursive --depth 1 --jobs 4 </dev/null
           mkdir build && cd build
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -161,8 +163,8 @@ jobs:
             -DJPEGXL_ENABLE_MANPAGES=OFF \
             -DJPEGXL_ENABLE_BENCHMARK=OFF \
             -DJPEGXL_ENABLE_EXAMPLES=OFF \
-            ..
-          ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
+            .. </dev/null
+          ninja -j$(sysctl -n hw.ncpu) tools/cjpegli </dev/null
           cp tools/cjpegli "$TOOLS_DIR/cjpegli"
           chmod +x "$TOOLS_DIR/cjpegli"
           echo "✅ cjpegli built natively for x86_64 via Rosetta 2"
@@ -173,7 +175,7 @@ jobs:
 
           # ── ECT ──
           curl -L -o /tmp/ect.zip "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${ECT_ASSET}"
-          unzip -o /tmp/ect.zip -d /tmp/ect
+          unzip -o /tmp/ect.zip -d /tmp/ect </dev/null
           ECT_BIN=$(find /tmp/ect -name 'ect' -type f | head -1)
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
@@ -203,6 +205,9 @@ jobs:
           for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           echo "✅ x64 bundle complete"; ls -la "$TOOLS_DIR/"
           EOF
+          
+          chmod +x build_x64.sh
+          arch -x86_64 /bin/bash -e ./build_x64.sh
 
       # ═══════════════════════════════════════════════════════════════
       # Windows
