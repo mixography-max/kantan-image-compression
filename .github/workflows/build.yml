@@ -50,168 +50,182 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # ── Bundle external tools (gs, pngquant, cjpegli, ect) ──
-      - name: Bundle tools (macOS)
-        if: runner.os == 'macOS'
+      # ═══════════════════════════════════════════════════════════════
+      # macOS ARM (native build on ARM runner)
+      # ═══════════════════════════════════════════════════════════════
+      - name: Bundle tools (macOS ARM)
+        if: matrix.target == 'aarch64-apple-darwin'
         run: |
           set -e
-          TARGET="${{ matrix.target }}"
           TOOLS_DIR="$(pwd)/src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
           mkdir -p "$LIB_DIR"
 
-          # Determine if cross-compiling (x86_64 on ARM runner)
-          if [ "$TARGET" = "x86_64-apple-darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-            echo "🔄 Cross-compiling for x86_64: installing x86_64 Homebrew via Rosetta 2"
-            # Install x86_64 Homebrew under /usr/local
-            arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
-            BREW="/usr/local/bin/brew"
-            CMAKE_ARCH_FLAG="-DCMAKE_OSX_ARCHITECTURES=x86_64"
-          else
-            BREW="$(which brew)"
-            CMAKE_ARCH_FLAG=""
-          fi
+          # ── Install tools via native Homebrew ──
+          brew install ghostscript pngquant cmake ninja
 
-          # Install tools via the correct Homebrew
-          $BREW install ghostscript pngquant
-
-          # Copy binaries
-          GS_BIN="$($BREW --prefix ghostscript)/bin/gs"
-          PQ_BIN="$($BREW --prefix pngquant)/bin/pngquant"
-          cp "$GS_BIN" "$TOOLS_DIR/gs"
-          cp "$PQ_BIN" "$TOOLS_DIR/pngquant"
+          cp "$(brew --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
+          cp "$(brew --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
           chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
 
-          # Build cjpegli from libjxl source
-          $BREW install cmake ninja
+          # ── Build cjpegli (native, standard approach) ──
           git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl
-          cd /tmp/libjxl
-          git submodule update --init --recursive --depth 1 --jobs 4
+          cd /tmp/libjxl && git submodule update --init --recursive --depth 1 --jobs 4
           mkdir build && cd build
-
-          if [ -n "$CMAKE_ARCH_FLAG" ]; then
-            # Cross-compile (x86_64 on ARM): build jpegli-static only, manually link cjpegli
-            cmake -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              $CMAKE_ARCH_FLAG \
-              -DJPEGXL_ENABLE_JPEGLI=ON \
-              -DJPEGXL_ENABLE_TOOLS=OFF \
-              -DBUILD_TESTING=OFF \
-              -DJPEGXL_ENABLE_DOXYGEN=OFF \
-              -DJPEGXL_ENABLE_MANPAGES=OFF \
-              -DJPEGXL_ENABLE_BENCHMARK=OFF \
-              -DJPEGXL_ENABLE_EXAMPLES=OFF \
-              -DJPEGXL_ENABLE_SJPEG=OFF \
-              -DJPEGXL_ENABLE_OPENEXR=OFF \
-              -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
-              -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=TRUE \
-              ..
-            ninja -j$(sysctl -n hw.ncpu) jpegli-static
-            # Find source files for cjpegli tool
-            CJPEGLI_SRC="/tmp/libjxl/tools/cjpegli.cc"
-            EXTRA_SRCS=""
-            for f in /tmp/libjxl/tools/tool_version.cc /tmp/libjxl/tools/file_io.cc \
-                     /tmp/libjxl/tools/speed_stats.cc /tmp/libjxl/tools/cmdline.cc; do
-              [ -f "$f" ] && EXTRA_SRCS="$EXTRA_SRCS $f"
-            done
-            INCLUDE_DIRS="-I/tmp/libjxl -I/tmp/libjxl/lib/include -I/tmp/libjxl/build -I/tmp/libjxl/build/lib/include -I/tmp/libjxl/third_party/highway"
-            LIB_DIRS="-L/tmp/libjxl/build/lib -L/tmp/libjxl/build/third_party/highway"
-            c++ -arch x86_64 -O2 -std=c++17 \
-              $INCLUDE_DIRS \
-              $CJPEGLI_SRC $EXTRA_SRCS \
-              $LIB_DIRS \
-              -ljpegli-static -lhwy \
-              -framework Accelerate \
-              -o "$TOOLS_DIR/cjpegli"
-          else
-            # Native build: standard approach
-            cmake -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DJPEGXL_ENABLE_JPEGLI=ON \
-              -DJPEGXL_ENABLE_TOOLS=ON \
-              -DBUILD_TESTING=OFF \
-              -DJPEGXL_ENABLE_DOXYGEN=OFF \
-              -DJPEGXL_ENABLE_MANPAGES=OFF \
-              -DJPEGXL_ENABLE_BENCHMARK=OFF \
-              -DJPEGXL_ENABLE_EXAMPLES=OFF \
-              ..
-            ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
-            cp tools/cjpegli "$TOOLS_DIR/cjpegli"
-          fi
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DJPEGXL_ENABLE_JPEGLI=ON \
+            -DJPEGXL_ENABLE_TOOLS=ON \
+            -DBUILD_TESTING=OFF \
+            -DJPEGXL_ENABLE_DOXYGEN=OFF \
+            -DJPEGXL_ENABLE_MANPAGES=OFF \
+            -DJPEGXL_ENABLE_BENCHMARK=OFF \
+            -DJPEGXL_ENABLE_EXAMPLES=OFF \
+            ..
+          ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
+          cp tools/cjpegli "$TOOLS_DIR/cjpegli"
           chmod +x "$TOOLS_DIR/cjpegli"
+          echo "✅ cjpegli built (native ARM)"
 
-          # Copy Ghostscript resource files (fonts, init, etc.)
-          GS_SHARE="$($BREW --prefix ghostscript)/share/ghostscript"
-          if [ -d "$GS_SHARE" ]; then
-            cp -R "$GS_SHARE" "$TOOLS_DIR/gsresource"
-            echo "✅ Copied GS resources from $GS_SHARE"
-          fi
+          # ── GS resources ──
+          GS_SHARE="$(brew --prefix ghostscript)/share/ghostscript"
+          [ -d "$GS_SHARE" ] && cp -R "$GS_SHARE" "$TOOLS_DIR/gsresource"
 
-          # Download ECT (Efficient Compression Tool)
-          ECT_URL="https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
-          curl -L -o /tmp/ect.zip "$ECT_URL"
+          # ── ECT ──
+          curl -L -o /tmp/ect.zip "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
           unzip -o /tmp/ect.zip -d /tmp/ect
           ECT_BIN=$(find /tmp/ect -name 'ect' -type f | head -1)
-          if [ -n "$ECT_BIN" ]; then
-            cp "$ECT_BIN" "$TOOLS_DIR/ect"
-            chmod +x "$TOOLS_DIR/ect"
-            echo "✅ Copied ECT"
-          fi
+          [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
-          # Function: bundle dylibs for a binary
+          # ── Bundle dylibs ──
           bundle_dylibs() {
             local bin="$1"
             for dylib in $(otool -L "$bin" | tail -n +2 | awk '{print $1}'); do
               case "$dylib" in
                 /opt/homebrew/*|/usr/local/*)
-                  local base
-                  base=$(basename "$dylib")
-                  if [ ! -f "$LIB_DIR/$base" ]; then
-                    cp "$dylib" "$LIB_DIR/$base"
-                    bundle_dylibs "$LIB_DIR/$base"
-                  fi
+                  local base; base=$(basename "$dylib")
+                  [ -f "$LIB_DIR/$base" ] && continue
+                  cp "$dylib" "$LIB_DIR/$base"
+                  bundle_dylibs "$LIB_DIR/$base"
                   install_name_tool -change "$dylib" "@executable_path/lib/$base" "$bin" 2>/dev/null || true
                   ;;
               esac
             done
           }
-
-          bundle_dylibs "$TOOLS_DIR/gs"
-          bundle_dylibs "$TOOLS_DIR/pngquant"
-          [ -f "$TOOLS_DIR/cjpegli" ] && bundle_dylibs "$TOOLS_DIR/cjpegli"
-          [ -f "$TOOLS_DIR/ect" ] && bundle_dylibs "$TOOLS_DIR/ect"
-
-          # Fix inter-dylib references
+          for t in gs pngquant cjpegli ect; do [ -f "$TOOLS_DIR/$t" ] && bundle_dylibs "$TOOLS_DIR/$t"; done
           for lib in "$LIB_DIR"/*.dylib; do
             [ -f "$lib" ] || continue
             for dep in $(otool -L "$lib" | tail -n +2 | awk '{print $1}'); do
-              case "$dep" in
+              case "$dep" in /opt/homebrew/*|/usr/local/*) dep_base=$(basename "$dep"); [ -f "$LIB_DIR/$dep_base" ] && install_name_tool -change "$dep" "@loader_path/$dep_base" "$lib" 2>/dev/null || true;; esac
+            done
+          done
+          for f in "$TOOLS_DIR"/{gs,pngquant,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          echo "✅ ARM bundle complete"; ls -la "$TOOLS_DIR/"
+
+      # ═══════════════════════════════════════════════════════════════
+      # macOS x64 (cross-compile on ARM runner via Rosetta 2)
+      # ═══════════════════════════════════════════════════════════════
+      - name: Bundle tools (macOS x64)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          set -e
+          TOOLS_DIR="$(pwd)/src-tauri/resources/tools"
+          LIB_DIR="$TOOLS_DIR/lib"
+          mkdir -p "$LIB_DIR"
+
+          # ── Install x86_64 Homebrew via Rosetta 2 ──
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+          BREW="/usr/local/bin/brew"
+
+          $BREW install ghostscript pngquant cmake ninja
+
+          cp "$($BREW --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
+          cp "$($BREW --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
+
+          # ── Build cjpegli for x86_64 ──
+          # Step 1: Build jpegli-static library only (avoids jxl_extras JPEG/PNG issues)
+          git clone --depth 1 --branch v0.11.2 https://github.com/libjxl/libjxl.git /tmp/libjxl
+          cd /tmp/libjxl && git submodule update --init --recursive --depth 1 --jobs 4
+          mkdir build && cd build
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DJPEGXL_ENABLE_JPEGLI=ON \
+            -DJPEGXL_ENABLE_TOOLS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DJPEGXL_ENABLE_DOXYGEN=OFF \
+            -DJPEGXL_ENABLE_MANPAGES=OFF \
+            -DJPEGXL_ENABLE_BENCHMARK=OFF \
+            -DJPEGXL_ENABLE_EXAMPLES=OFF \
+            -DJPEGXL_ENABLE_SJPEG=OFF \
+            -DJPEGXL_ENABLE_OPENEXR=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
+            -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=TRUE \
+            ..
+          ninja -j$(sysctl -n hw.ncpu) jpegli-static
+          echo "✅ jpegli-static built for x86_64"
+
+          # Step 2: Manually compile cjpegli tool against jpegli-static
+          SRCS="/tmp/libjxl/tools/cjpegli.cc"
+          for f in /tmp/libjxl/tools/tool_version.cc /tmp/libjxl/tools/file_io.cc \
+                   /tmp/libjxl/tools/speed_stats.cc /tmp/libjxl/tools/cmdline.cc; do
+            [ -f "$f" ] && SRCS="$SRCS $f"
+          done
+          echo "Source files: $SRCS"
+          c++ -arch x86_64 -O2 -std=c++17 \
+            -DJPEGXL_VERSION=\"0.11.2\" \
+            -I/tmp/libjxl -I/tmp/libjxl/lib/include \
+            -I/tmp/libjxl/build -I/tmp/libjxl/build/lib/include \
+            -I/tmp/libjxl/third_party/highway \
+            $SRCS \
+            -L/tmp/libjxl/build/lib -L/tmp/libjxl/build/third_party/highway \
+            -ljpegli-static -lhwy \
+            -framework Accelerate \
+            -o "$TOOLS_DIR/cjpegli"
+          chmod +x "$TOOLS_DIR/cjpegli"
+          echo "✅ cjpegli built for x86_64"
+
+          # ── GS resources ──
+          GS_SHARE="$($BREW --prefix ghostscript)/share/ghostscript"
+          [ -d "$GS_SHARE" ] && cp -R "$GS_SHARE" "$TOOLS_DIR/gsresource"
+
+          # ── ECT ──
+          curl -L -o /tmp/ect.zip "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
+          unzip -o /tmp/ect.zip -d /tmp/ect
+          ECT_BIN=$(find /tmp/ect -name 'ect' -type f | head -1)
+          [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
+
+          # ── Bundle dylibs ──
+          bundle_dylibs() {
+            local bin="$1"
+            for dylib in $(otool -L "$bin" | tail -n +2 | awk '{print $1}'); do
+              case "$dylib" in
                 /opt/homebrew/*|/usr/local/*)
-                  dep_base=$(basename "$dep")
-                  if [ -f "$LIB_DIR/$dep_base" ]; then
-                    install_name_tool -change "$dep" "@loader_path/$dep_base" "$lib" 2>/dev/null || true
-                  fi
+                  local base; base=$(basename "$dylib")
+                  [ -f "$LIB_DIR/$base" ] && continue
+                  cp "$dylib" "$LIB_DIR/$base"
+                  bundle_dylibs "$LIB_DIR/$base"
+                  install_name_tool -change "$dylib" "@executable_path/lib/$base" "$bin" 2>/dev/null || true
                   ;;
               esac
             done
-          done
-
-          # Ad-hoc sign everything
-          for f in "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/ect"; do
-            [ -f "$f" ] && codesign --force --sign - "$f"
-          done
+          }
+          for t in gs pngquant cjpegli ect; do [ -f "$TOOLS_DIR/$t" ] && bundle_dylibs "$TOOLS_DIR/$t"; done
           for lib in "$LIB_DIR"/*.dylib; do
             [ -f "$lib" ] || continue
-            codesign --force --sign - "$lib"
+            for dep in $(otool -L "$lib" | tail -n +2 | awk '{print $1}'); do
+              case "$dep" in /opt/homebrew/*|/usr/local/*) dep_base=$(basename "$dep"); [ -f "$LIB_DIR/$dep_base" ] && install_name_tool -change "$dep" "@loader_path/$dep_base" "$lib" 2>/dev/null || true;; esac
+            done
           done
+          for f in "$TOOLS_DIR"/{gs,pngquant,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          echo "✅ x64 bundle complete"; ls -la "$TOOLS_DIR/"
 
-          echo "✅ Bundled tools:"
-          ls -la "$TOOLS_DIR/"
-          echo "┅┅ lib/:"
-          ls -la "$LIB_DIR/" || true
-          echo "┅┅ gsresource/:"
-          du -sh "$TOOLS_DIR/gsresource/" 2>/dev/null || true
-
+      # ═══════════════════════════════════════════════════════════════
+      # Windows
+      # ═══════════════════════════════════════════════════════════════
       - name: Bundle tools (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -229,13 +243,11 @@ jobs:
             if ($gsExe) {
               Copy-Item $gsExe.FullName "$toolsDir\gs.exe"
               Write-Host "✅ Copied gs.exe"
-              # Copy GS DLL
               $gsDll = Get-ChildItem $gsExe.Directory.FullName -Filter "gsdll64.dll" -ErrorAction SilentlyContinue
               if ($gsDll) {
                 Copy-Item $gsDll.FullName "$toolsDir\lib\"
                 Write-Host "✅ Copied gsdll64.dll"
               }
-              # Copy GS Resource directory (fonts, init, etc.)
               $gsResource = Join-Path $gsDir.FullName "Resource"
               if (Test-Path $gsResource) {
                 Copy-Item -Recurse $gsResource "$toolsDir\gsresource\Resource"
@@ -272,9 +284,7 @@ jobs:
             Write-Host "⚠️ cjpegli not found in libjxl release"
           }
 
-          Write-Host "✅ Bundled tools (before ECT):"
-
-          # Download ECT (Efficient Compression Tool)
+          # Download ECT
           $ectUrl = "https://github.com/fhanau/Efficient-Compression-Tool/releases/download/v0.9.5/${{ matrix.ect_asset }}"
           $ectZip = "$env:TEMP\ect.zip"
           $ectExtract = "$env:TEMP\ect"
@@ -289,6 +299,9 @@ jobs:
           Write-Host "✅ Final bundled tools:"
           Get-ChildItem "$toolsDir" -Recurse | Format-Table Name, Length
 
+      # ═══════════════════════════════════════════════════════════════
+      # Build
+      # ═══════════════════════════════════════════════════════════════
       - name: Build Tauri app (tag release)
         if: startsWith(github.ref, 'refs/tags/')
         uses: tauri-apps/tauri-action@v0
