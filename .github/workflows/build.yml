@@ -163,6 +163,8 @@ jobs:
             -DJPEGXL_ENABLE_MANPAGES=OFF \
             -DJPEGXL_ENABLE_BENCHMARK=OFF \
             -DJPEGXL_ENABLE_EXAMPLES=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=TRUE \
+            -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=TRUE \
             .. </dev/null
           ninja -j$(sysctl -n hw.ncpu) tools/cjpegli </dev/null
           cp tools/cjpegli "$TOOLS_DIR/cjpegli"
