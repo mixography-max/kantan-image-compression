@@ -52,7 +52,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -e
-          brew install ghostscript pngquant jpeg-xl
+          brew install ghostscript pngquant
 
           TOOLS_DIR="src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
@@ -61,11 +61,23 @@ jobs:
           # Copy binaries
           GS_BIN="$(brew --prefix ghostscript)/bin/gs"
           PQ_BIN="$(brew --prefix pngquant)/bin/pngquant"
-          CJ_BIN="$(brew --prefix jpeg-xl)/bin/cjpegli"
           cp "$GS_BIN" "$TOOLS_DIR/gs"
           cp "$PQ_BIN" "$TOOLS_DIR/pngquant"
-          cp "$CJ_BIN" "$TOOLS_DIR/cjpegli"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
+
+          # Try to get cjpegli (not in Homebrew, download prebuilt or skip)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "x86_64" ]; then
+            JXL_URL="https://github.com/libjxl/libjxl/releases/download/v0.11.2/jxl-linux-x86_64-static.zip"
+          fi
+          # Try system-installed cjpegli first
+          if command -v cjpegli &>/dev/null; then
+            cp "$(command -v cjpegli)" "$TOOLS_DIR/cjpegli"
+            chmod +x "$TOOLS_DIR/cjpegli"
+            echo "✅ cjpegli found in system PATH"
+          else
+            echo "⚠️ cjpegli not available on macOS, JPEG will use sips fallback"
+          fi
 
           # Copy Ghostscript resource files (fonts, init, etc.)
           GS_SHARE="$(brew --prefix ghostscript)/share/ghostscript"
@@ -94,7 +106,7 @@ jobs:
 
           bundle_dylibs "$TOOLS_DIR/gs"
           bundle_dylibs "$TOOLS_DIR/pngquant"
-          bundle_dylibs "$TOOLS_DIR/cjpegli"
+          [ -f "$TOOLS_DIR/cjpegli" ] && bundle_dylibs "$TOOLS_DIR/cjpegli"
 
           # Fix inter-dylib references
           for lib in "$LIB_DIR"/*.dylib; do
@@ -113,7 +125,7 @@ jobs:
 
           # Ad-hoc sign everything
           for f in "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"; do
-            codesign --force --sign - "$f"
+            [ -f "$f" ] && codesign --force --sign - "$f"
           done
           for lib in "$LIB_DIR"/*.dylib; do
             [ -f "$lib" ] || continue
@@ -173,14 +185,18 @@ jobs:
             Write-Host "✅ Copied pngquant.exe"
           }
 
-          # Install libjxl (cjpegli)
-          choco install libjxl -y --no-progress
-          $cjExe = Get-Command cjpegli -ErrorAction SilentlyContinue
+          # Download cjpegli from libjxl GitHub releases
+          $jxlUrl = "https://github.com/libjxl/libjxl/releases/download/v0.11.2/jxl-x64-windows-static.zip"
+          $jxlZip = "$env:TEMP\jxl.zip"
+          $jxlExtract = "$env:TEMP\jxl"
+          Invoke-WebRequest -Uri $jxlUrl -OutFile $jxlZip
+          Expand-Archive -Path $jxlZip -DestinationPath $jxlExtract -Force
+          $cjExe = Get-ChildItem $jxlExtract -Recurse -Filter "cjpegli.exe" | Select-Object -First 1
           if ($cjExe) {
-            Copy-Item $cjExe.Source "$toolsDir\cjpegli.exe"
-            Write-Host "✅ Copied cjpegli.exe"
+            Copy-Item $cjExe.FullName "$toolsDir\cjpegli.exe"
+            Write-Host "✅ Copied cjpegli.exe from libjxl release"
           } else {
-            Write-Host "⚠️ cjpegli not found, JPEG will use fallback"
+            Write-Host "⚠️ cjpegli not found in libjxl release"
           }
 
           Write-Host "✅ Bundled tools:"
