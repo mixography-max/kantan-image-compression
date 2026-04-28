@@ -54,7 +54,7 @@ jobs:
           set -e
           brew install ghostscript pngquant
 
-          TOOLS_DIR="src-tauri/resources/tools"
+          TOOLS_DIR="$(pwd)/src-tauri/resources/tools"
           LIB_DIR="$TOOLS_DIR/lib"
           mkdir -p "$LIB_DIR"
 
@@ -82,9 +82,8 @@ jobs:
             -DJPEGXL_ENABLE_EXAMPLES=OFF \
             ..
           ninja -j$(sysctl -n hw.ncpu) tools/cjpegli
-          cp tools/cjpegli "$OLDPWD/$TOOLS_DIR/cjpegli"
-          chmod +x "$OLDPWD/$TOOLS_DIR/cjpegli"
-          cd "$OLDPWD"
+          cp tools/cjpegli "$TOOLS_DIR/cjpegli"
+          chmod +x "$TOOLS_DIR/cjpegli"
           echo "✅ Built and copied cjpegli from libjxl source"
 
           # Copy Ghostscript resource files (fonts, init, etc.)
