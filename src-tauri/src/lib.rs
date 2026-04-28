@@ -163,25 +163,27 @@ fn make_tool_command(exe: &str) -> Command {
             // Set GS_LIB for Ghostscript resource files
             let gs_res = tools_dir.join("gsresource");
             if gs_res.exists() {
-                // Collect all subdirectories that might contain gs init/resource files
                 let mut gs_lib_paths: Vec<String> = Vec::new();
-                // macOS: gsresource/<version>/ contains Resource, lib
-                // Windows: gsresource/Resource, gsresource/lib
-                if let Ok(entries) = fs::read_dir(&gs_res) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_dir() {
-                            // Add the directory itself and common subdirs
-                            let resource = p.join("Resource");
-                            let lib = p.join("lib");
-                            let init = p.join("Resource").join("Init");
-                            if resource.exists() { gs_lib_paths.push(resource.to_string_lossy().to_string()); }
-                            if lib.exists() { gs_lib_paths.push(lib.to_string_lossy().to_string()); }
-                            if init.exists() { gs_lib_paths.push(init.to_string_lossy().to_string()); }
-                            gs_lib_paths.push(p.to_string_lossy().to_string());
+                // Add the gsresource dir itself
+                gs_lib_paths.push(gs_res.to_string_lossy().to_string());
+                // Traverse subdirectories to find Resource, lib, Init
+                fn collect_gs_paths(dir: &Path, paths: &mut Vec<String>) {
+                    if let Ok(entries) = fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_dir() {
+                                let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                paths.push(p.to_string_lossy().to_string());
+                                if name == "Resource" || name == "lib" || name == "Init" {
+                                    // Don't recurse further into these
+                                } else {
+                                    collect_gs_paths(&p, paths);
+                                }
+                            }
                         }
                     }
                 }
+                collect_gs_paths(&gs_res, &mut gs_lib_paths);
                 if !gs_lib_paths.is_empty() {
                     let sep = if cfg!(windows) { ";" } else { ":" };
                     cmd.env("GS_LIB", gs_lib_paths.join(sep));
@@ -263,7 +265,15 @@ fn run_tool(exe: &str, args: &[&str]) -> Result<(), String> {
         .map_err(|e| format!("{} の実行に失敗: {}", exe, e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{} が失敗: {}", exe, stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut msg = format!("{} が失敗 (exit {})", exe, output.status);
+        if !stderr.is_empty() {
+            msg.push_str(&format!("\nstderr: {}", stderr.chars().take(500).collect::<String>()));
+        }
+        if !stdout.is_empty() {
+            msg.push_str(&format!("\nstdout: {}", stdout.chars().take(300).collect::<String>()));
+        }
+        return Err(msg);
     }
     Ok(())
 }
@@ -365,13 +375,24 @@ fn compress_pdf(src: &Path, dst: &Path, dpi: u32, jpeg_q: u32) -> Result<(), Str
     } else { gs };
 
     if !tool_exists(&gs) {
-        return Err("Ghostscript (gs) が見つかりません。インストールしてください。".to_string());
+        return Err(format!("Ghostscript (gs) が見つかりません。\n検索パス: {}\nbundled_tools_dir: {:?}",
+            gs, bundled_tools_dir()));
     }
 
     let dpi_str = dpi.to_string();
     let jpeg_q_str = jpeg_q.to_string();
-    let output_arg = format!("-sOutputFile={}", dst.to_str().unwrap());
-    run_tool(&gs, &[
+
+    // Use a temp file for output to avoid path encoding issues, then move
+    let tmp_out = tempfile::Builder::new()
+        .suffix(".pdf")
+        .tempfile()
+        .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+    let tmp_path = tmp_out.path().to_string_lossy().to_string();
+    // Close the temp file handle so gs can write to it
+    drop(tmp_out);
+
+    let output_arg = format!("-sOutputFile={}", tmp_path);
+    let result = run_tool(&gs, &[
         "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.5",
         "-dNOPAUSE", "-dBATCH", "-dQUIET",
         "-dDownsampleColorImages=true", "-dDownsampleGrayImages=true",
@@ -391,7 +412,20 @@ fn compress_pdf(src: &Path, dst: &Path, dpi: u32, jpeg_q: u32) -> Result<(), Str
         "-dOptimize=true",
         &output_arg,
         src.to_str().unwrap(),
-    ])
+    ]);
+
+    match result {
+        Ok(()) => {
+            // Move temp output to final destination
+            fs::copy(&tmp_path, dst).map_err(|e| format!("出力ファイルのコピー失敗: {}", e))?;
+            let _ = fs::remove_file(&tmp_path);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_path);
+            Err(format!("PDF圧縮エラー (gs={}):\n{}", gs, e))
+        }
+    }
 }
 
 fn compress_office(src: &Path, dst: &Path, jpeg_quality: u32, png_colors: u32, file_type: &str) -> Result<(), String> {
