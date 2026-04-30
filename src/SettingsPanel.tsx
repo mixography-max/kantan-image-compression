@@ -9,6 +9,10 @@ interface Settings {
   pdfJpegQ: number;
   officeQuality: number;
   group: boolean;
+  progressiveJpeg: boolean;
+  stripMetadata: boolean;
+  maxWidth: number;
+  maxHeight: number;
 }
 
 interface Props {
@@ -83,20 +87,35 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
         </div>
       </div>
 
-      <div className="setting-item">
-        <label>JPEG 品質</label>
-        <input
-          type="range"
-          name="jpegQuality"
-          min={10}
-          max={100}
-          value={settings.jpegQuality}
-          onChange={handleChange}
-        />
-        <span>{settings.jpegQuality}%</span>
+      <div className="setting-group">
+        <label className="setting-group-title">📸 JPEG 設定</label>
+        <div className="setting-item">
+          <label>品質</label>
+          <input
+            type="range"
+            name="jpegQuality"
+            min={10}
+            max={100}
+            value={settings.jpegQuality}
+            onChange={handleChange}
+          />
+          <span>{settings.jpegQuality}%</span>
+        </div>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              name="progressiveJpeg"
+              checked={settings.progressiveJpeg}
+              onChange={handleChange}
+            />
+            プログレッシブ JPEG
+          </label>
+        </div>
       </div>
+
       <div className="setting-item">
-        <label>PNG 色数</label>
+        <label>🎨 PNG 色数</label>
         <input
           type="number"
           name="pngColors"
@@ -108,7 +127,7 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
       </div>
 
       <div className="setting-group">
-        <label className="setting-group-title">PDF 圧縮設定</label>
+        <label className="setting-group-title">📄 PDF 圧縮設定</label>
         <div className="setting-item">
           <label>プリセット</label>
           <select value={currentPresetLabel} onChange={handlePreset}>
@@ -146,7 +165,7 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
       </div>
 
       <div className="setting-item">
-        <label>Office内画像 JPEG品質</label>
+        <label>📎 Office内画像 JPEG品質</label>
         <input
           type="range"
           name="officeQuality"
@@ -157,16 +176,45 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
         />
         <span>{settings.officeQuality}%</span>
       </div>
-      <div className="setting-item">
-        <label>
+
+      <div className="setting-group">
+        <label className="setting-group-title">🔧 共通オプション</label>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              name="stripMetadata"
+              checked={settings.stripMetadata}
+              onChange={handleChange}
+            />
+            EXIF / メタデータを削除
+          </label>
+        </div>
+        <div className="setting-item">
+          <label>📐 長辺の最大サイズ (px)</label>
           <input
-            type="checkbox"
-            name="group"
-            checked={settings.group}
+            type="number"
+            name="maxWidth"
+            min={0}
+            max={10000}
+            step={100}
+            value={settings.maxWidth}
             onChange={handleChange}
+            placeholder="0 = リサイズなし"
           />
-          ファイルをフォルダにまとめる
-        </label>
+          <span className="setting-hint">{settings.maxWidth === 0 ? 'リサイズなし' : `${settings.maxWidth}px`}</span>
+        </div>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              name="group"
+              checked={settings.group}
+              onChange={handleChange}
+            />
+            ファイルをフォルダにまとめる
+          </label>
+        </div>
       </div>
     </div>
   );

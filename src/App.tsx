@@ -16,6 +16,10 @@ const App: React.FC = () => {
     pdfJpegQ: 82,
     officeQuality: 80,
     group: false,
+    progressiveJpeg: true,
+    stripMetadata: true,
+    maxWidth: 0,
+    maxHeight: 0,
   });
 
   // Load saved output directory on mount
@@ -52,7 +56,7 @@ const App: React.FC = () => {
             <h3>🔧 圧縮アルゴリズム</h3>
             <dl>
               <dt>📸 JPEG</dt>
-              <dd><strong>Jpegli</strong>（Google開発）— 従来のJPEGと互換性を保ちながら、最新の心理視覚モデルで高品質・高圧縮を実現</dd>
+              <dd><strong>Jpegli</strong>（Google開発）— XYB色空間 + プログレッシブスキャンで高品質・高圧縮を実現</dd>
               <dt>🎨 PNG</dt>
               <dd><strong>pngquant</strong>（減色）+ <strong>ECT</strong>（ロスレス再圧縮）の2段階最適化で最高水準のPNG圧縮</dd>
               <dt>📄 PDF</dt>

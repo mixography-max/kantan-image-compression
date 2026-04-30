@@ -1,13 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Settings & Result types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CompressSettings {
     jpeg_quality: Option<u32>,
@@ -16,6 +18,10 @@ struct CompressSettings {
     pdf_jpeg_q: Option<u32>,
     office_quality: Option<u32>,
     output_dir: Option<String>,
+    strip_metadata: Option<bool>,
+    progressive_jpeg: Option<bool>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -335,14 +341,20 @@ fn run_tool_with_cwd(exe: &str, args: &[&str], cwd: &str) -> Result<(), String> 
 // Compression functions
 // ---------------------------------------------------------------------------
 
-fn compress_jpeg(src: &Path, dst: &Path, quality: u32) -> Result<(), String> {
+fn compress_jpeg(src: &Path, dst: &Path, quality: u32, progressive: bool, _strip_metadata: bool) -> Result<(), String> {
     let cjpegli = resolve_tool("cjpegli");
     if tool_exists(&cjpegli) {
-        run_tool(&cjpegli, &[
-            src.to_str().unwrap(),
-            dst.to_str().unwrap(),
-            "-q", &quality.to_string(),
-        ])
+        let mut args = vec![
+            src.to_str().unwrap().to_string(),
+            dst.to_str().unwrap().to_string(),
+            "-q".to_string(),
+            quality.to_string(),
+        ];
+        if progressive {
+            args.push("-p".to_string());
+        }
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        run_tool(&cjpegli, &arg_refs)
     } else {
         // Fallback: sips (macOS only)
         #[cfg(target_os = "macos")]
@@ -595,6 +607,94 @@ fn compress_office(src: &Path, dst: &Path, jpeg_quality: u32, png_colors: u32, f
 }
 
 // ---------------------------------------------------------------------------
+// Resize helper (using `image` crate)
+// ---------------------------------------------------------------------------
+
+fn resize_if_needed(src: &Path, max_w: u32, max_h: u32) -> Result<Option<PathBuf>, String> {
+    if max_w == 0 && max_h == 0 {
+        return Ok(None);
+    }
+    let ext = src.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if ext != "jpg" && ext != "jpeg" && ext != "png" {
+        return Ok(None);
+    }
+
+    let img = image::open(src).map_err(|e| format!("画像読み込み失敗: {}", e))?;
+    let (orig_w, orig_h) = (img.width(), img.height());
+
+    let target_w = if max_w > 0 { max_w } else { orig_w };
+    let target_h = if max_h > 0 { max_h } else { orig_h };
+
+    if orig_w <= target_w && orig_h <= target_h {
+        return Ok(None); // Already within limits
+    }
+
+    let ratio_w = target_w as f64 / orig_w as f64;
+    let ratio_h = target_h as f64 / orig_h as f64;
+    let ratio = ratio_w.min(ratio_h);
+    let new_w = (orig_w as f64 * ratio).round() as u32;
+    let new_h = (orig_h as f64 * ratio).round() as u32;
+
+    let resized = img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3);
+
+    let tmp = tempfile::Builder::new()
+        .suffix(&format!(".{}", ext))
+        .tempfile()
+        .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+    let _tmp_path = tmp.path().to_path_buf();
+    // Keep temp file alive by persisting
+    let persist_path = tmp.into_temp_path();
+
+    resized.save(&*persist_path).map_err(|e| format!("リサイズ画像保存失敗: {}", e))?;
+    // Leak the TempPath so the file is not deleted
+    let leaked = persist_path.to_path_buf();
+    std::mem::forget(persist_path);
+    Ok(Some(leaked))
+}
+
+// ---------------------------------------------------------------------------
+// Folder expansion
+// ---------------------------------------------------------------------------
+
+fn expand_inputs(inputs: &[String]) -> Vec<String> {
+    let supported = ["jpg", "jpeg", "png", "pdf", "docx", "xlsx", "pptx"];
+    let mut result = Vec::new();
+    for input in inputs {
+        let p = Path::new(input);
+        if p.is_dir() {
+            collect_files_recursive(p, &supported, &mut result);
+        } else {
+            result.push(input.clone());
+        }
+    }
+    result
+}
+
+fn collect_files_recursive(dir: &Path, extensions: &[&str], out: &mut Vec<String>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.path());
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files_recursive(&path, extensions, out);
+            } else {
+                let ext = path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                    .unwrap_or_default();
+                if extensions.contains(&ext.as_str()) {
+                    out.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tauri command
 // ---------------------------------------------------------------------------
 
@@ -606,11 +706,19 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
     let pdf_dpi = settings.pdf_dpi.unwrap_or(235);
     let pdf_jq = settings.pdf_jpeg_q.unwrap_or(82);
     let office_q = settings.office_quality.unwrap_or(80);
+    let progressive = settings.progressive_jpeg.unwrap_or(true);
+    let strip_meta = settings.strip_metadata.unwrap_or(true);
+    let max_w = settings.max_width.unwrap_or(0);
+    let max_h = settings.max_height.unwrap_or(0);
 
     let supported = ["jpg", "jpeg", "png", "pdf", "docx", "xlsx", "pptx"];
-    let mut results = Vec::new();
 
-    for input in &inputs {
+    // Expand folders to individual files
+    let all_inputs = expand_inputs(&inputs);
+
+    let results = Mutex::new(Vec::new());
+
+    all_inputs.par_iter().for_each(|input| {
         let src = Path::new(input);
         let ext = src.extension()
             .and_then(|e| e.to_str())
@@ -618,7 +726,7 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
             .unwrap_or_default();
 
         if !supported.contains(&ext.as_str()) {
-            results.push(CompressResult {
+            results.lock().unwrap().push(CompressResult {
                 filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                 output_filename: String::new(),
                 output_path: String::new(),
@@ -628,7 +736,7 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                 is_error: true,
                 error_message: Some(format!("未対応のファイル形式: .{}", ext)),
             });
-            continue;
+            return;
         }
 
         let original_size = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
@@ -636,13 +744,22 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
         let out_name = format!("{}_compressed.{}", stem, ext);
         let dst = out_dir.join(&out_name);
 
+        // Resize if needed (images only)
+        let resized_path = resize_if_needed(src, max_w, max_h).ok().flatten();
+        let actual_src = resized_path.as_deref().unwrap_or(src);
+
         let compress_result = match ext.as_str() {
-            "jpg" | "jpeg" => compress_jpeg(src, &dst, jpeg_q),
-            "png" => compress_png(src, &dst, png_c),
+            "jpg" | "jpeg" => compress_jpeg(actual_src, &dst, jpeg_q, progressive, strip_meta),
+            "png" => compress_png(actual_src, &dst, png_c),
             "pdf" => compress_pdf(src, &dst, pdf_dpi, pdf_jq),
             "docx" | "xlsx" | "pptx" => compress_office(src, &dst, office_q, png_c, &ext),
             _ => Err("未対応".to_string()),
         };
+
+        // Clean up resized temp file
+        if let Some(ref rp) = resized_path {
+            let _ = fs::remove_file(rp);
+        }
 
         match compress_result {
             Ok(()) => {
@@ -652,7 +769,7 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                 } else {
                     0.0
                 };
-                results.push(CompressResult {
+                results.lock().unwrap().push(CompressResult {
                     filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                     output_filename: out_name,
                     output_path: dst.to_string_lossy().to_string(),
@@ -703,7 +820,7 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                 ));
                 let _ = fs::write(&report_path, &report);
 
-                results.push(CompressResult {
+                results.lock().unwrap().push(CompressResult {
                     filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                     output_filename: String::new(),
                     output_path: String::new(),
@@ -715,9 +832,9 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                 });
             }
         }
-    }
+    });
 
-    results
+    results.into_inner().unwrap()
 }
 
 #[tauri::command]

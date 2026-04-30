@@ -13,6 +13,10 @@ interface Settings {
   pdfJpegQ: number;
   officeQuality: number;
   group: boolean;
+  progressiveJpeg: boolean;
+  stripMetadata: boolean;
+  maxWidth: number;
+  maxHeight: number;
 }
 
 interface Props {
@@ -92,6 +96,10 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
           pdfDpi: settings.pdfDpi,
           pdfJpegQ: settings.pdfJpegQ,
           officeQuality: settings.officeQuality,
+          stripMetadata: settings.stripMetadata,
+          progressiveJpeg: settings.progressiveJpeg,
+          maxWidth: settings.maxWidth,
+          maxHeight: settings.maxWidth, // Use maxWidth for both (longest edge)
           outputDir: outputDir || undefined,
         },
       });
