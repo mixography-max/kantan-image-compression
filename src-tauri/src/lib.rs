@@ -559,6 +559,7 @@ fn compress_jpeg(src: &Path, dst: &Path, quality: u32, progressive: bool, _strip
         ];
         if progressive {
             args.push("-p".to_string());
+            args.push("2".to_string());
         }
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         run_tool(&cjpegli, &arg_refs)
