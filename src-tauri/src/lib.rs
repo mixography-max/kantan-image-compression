@@ -22,6 +22,8 @@ struct CompressSettings {
     progressive_jpeg: Option<bool>,
     max_width: Option<u32>,
     max_height: Option<u32>,
+    convert_webp: Option<bool>,
+    target_size_kb: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -402,7 +404,19 @@ fn compress_png(src: &Path, dst: &Path, colors: u32) -> Result<(), String> {
             "--", dst.to_str().unwrap(),
         ])?;
 
-        // Second pass: ECT (Efficient Compression Tool) for lossless optimization
+        // Second pass: Oxipng (strip metadata + filter optimization)
+        let oxipng_opts = oxipng::Options {
+            strip: oxipng::StripChunks::Safe,
+            optimize_alpha: true,
+            ..oxipng::Options::from_preset(4)
+        };
+        let _ = oxipng::optimize(
+            &oxipng::InFile::Path(dst.to_path_buf()),
+            &oxipng::OutFile::from_path(dst.to_path_buf()),
+            &oxipng_opts,
+        );
+
+        // Third pass: ECT (Efficient Compression Tool) for lossless optimization
         let ect = resolve_tool("ect");
         if tool_exists(&ect) {
             // -9 = max compression, --strict = preserve correctness
@@ -477,6 +491,82 @@ fn compress_pdf(src: &Path, dst: &Path, dpi: u32, jpeg_q: u32) -> Result<(), Str
             let _ = fs::remove_file(&tmp_path);
             Err(format!("PDF圧縮エラー (gs={}):\n{}", gs, e))
         }
+    }
+}
+
+fn convert_to_webp(src: &Path, dst: &Path, quality: u32) -> Result<(), String> {
+    let cwebp = resolve_tool("cwebp");
+    if tool_exists(&cwebp) {
+        run_tool(&cwebp, &[
+            "-q", &quality.to_string(),
+            src.to_str().unwrap(),
+            "-o", dst.to_str().unwrap(),
+        ])
+    } else {
+        Err("cwebp が見つかりません。WebP 変換はスキップされます。".to_string())
+    }
+}
+
+fn compress_pdf_to_size(src: &Path, dst: &Path, target_kb: u64) -> Result<(), String> {
+    let target_bytes = target_kb * 1024;
+    let original_size = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+
+    if original_size <= target_bytes {
+        fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;
+        return Ok(());
+    }
+
+    // Binary search: try different DPI/quality combinations
+    let presets: Vec<(u32, u32)> = vec![
+        (235, 82), (200, 80), (175, 78), (150, 75),
+        (130, 72), (110, 70), (100, 65), (90, 60),
+        (80, 55), (72, 50), (72, 40), (72, 30),
+    ];
+
+    let mut best_result: Option<PathBuf> = None;
+
+    for (dpi, jpeg_q) in &presets {
+        let tmp = tempfile::Builder::new()
+            .suffix(".pdf")
+            .tempfile()
+            .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+        let tmp_path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        if compress_pdf(src, &tmp_path, *dpi, *jpeg_q).is_ok() {
+            let size = fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(u64::MAX);
+            if size <= target_bytes {
+                // Found a setting that meets the target
+                if let Some(ref prev) = best_result {
+                    let _ = fs::remove_file(prev);
+                }
+                best_result = Some(tmp_path);
+                break;
+            } else {
+                // Still too large, try lower quality
+                if let Some(ref prev) = best_result {
+                    let _ = fs::remove_file(prev);
+                }
+                best_result = Some(tmp_path);
+            }
+        } else {
+            let _ = fs::remove_file(&tmp_path);
+        }
+    }
+
+    match best_result {
+        Some(ref result_path) => {
+            fs::copy(result_path, dst).map_err(|e| format!("コピー失敗: {}", e))?;
+            let _ = fs::remove_file(result_path);
+            let final_size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+            if final_size > target_bytes {
+                // Could not meet target, but use best effort
+                eprintln!("Warning: target {}KB not met, result is {}KB",
+                    target_kb, final_size / 1024);
+            }
+            Ok(())
+        }
+        None => Err("PDF サイズ目標圧縮に失敗しました".to_string()),
     }
 }
 
@@ -710,6 +800,8 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
     let strip_meta = settings.strip_metadata.unwrap_or(true);
     let max_w = settings.max_width.unwrap_or(0);
     let max_h = settings.max_height.unwrap_or(0);
+    let webp_mode = settings.convert_webp.unwrap_or(false);
+    let target_kb = settings.target_size_kb.unwrap_or(0);
 
     let supported = ["jpg", "jpeg", "png", "pdf", "docx", "xlsx", "pptx"];
 
@@ -741,19 +833,33 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
 
         let original_size = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
         let stem = src.file_stem().unwrap_or_default().to_string_lossy();
-        let out_name = format!("{}_compressed.{}", stem, ext);
+
+        // Determine output extension (WebP conversion for images)
+        let is_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png");
+        let out_ext = if webp_mode && is_image { "webp".to_string() } else { ext.clone() };
+        let out_name = format!("{}_compressed.{}", stem, out_ext);
         let dst = out_dir.join(&out_name);
 
         // Resize if needed (images only)
         let resized_path = resize_if_needed(src, max_w, max_h).ok().flatten();
         let actual_src = resized_path.as_deref().unwrap_or(src);
 
-        let compress_result = match ext.as_str() {
-            "jpg" | "jpeg" => compress_jpeg(actual_src, &dst, jpeg_q, progressive, strip_meta),
-            "png" => compress_png(actual_src, &dst, png_c),
-            "pdf" => compress_pdf(src, &dst, pdf_dpi, pdf_jq),
-            "docx" | "xlsx" | "pptx" => compress_office(src, &dst, office_q, png_c, &ext),
-            _ => Err("未対応".to_string()),
+        let compress_result = if webp_mode && is_image {
+            convert_to_webp(actual_src, &dst, jpeg_q)
+        } else {
+            match ext.as_str() {
+                "jpg" | "jpeg" => compress_jpeg(actual_src, &dst, jpeg_q, progressive, strip_meta),
+                "png" => compress_png(actual_src, &dst, png_c),
+                "pdf" => {
+                    if target_kb > 0 {
+                        compress_pdf_to_size(src, &dst, target_kb)
+                    } else {
+                        compress_pdf(src, &dst, pdf_dpi, pdf_jq)
+                    }
+                }
+                "docx" | "xlsx" | "pptx" => compress_office(src, &dst, office_q, png_c, &ext),
+                _ => Err("未対応".to_string()),
+            }
         };
 
         // Clean up resized temp file

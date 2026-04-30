@@ -67,11 +67,12 @@ jobs:
           mkdir -p "$LIB_DIR"
 
           # ── Install Homebrew tools ──
-          brew install ghostscript pngquant dylibbundler
+          brew install ghostscript pngquant webp dylibbundler
 
           cp "$(brew --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
           cp "$(brew --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant"
+          cp "$(brew --prefix webp)/bin/cwebp" "$TOOLS_DIR/cwebp"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cwebp"
 
           # ── cjpegli from conda-forge (pre-built, no compilation needed) ──
           curl -Ls "https://micro.mamba.pm/api/micromamba/osx-arm64/latest" | tar -xvj bin/micromamba
@@ -91,7 +92,7 @@ jobs:
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
           # ── Bundle dylibs ──
-          for t in gs pngquant cjpegli ect; do
+          for t in gs pngquant cwebp cjpegli ect; do
             if [ -f "$TOOLS_DIR/$t" ]; then
               dylibbundler -of -b \
                 -s "/tmp/conda-jxl/lib" \
@@ -102,7 +103,7 @@ jobs:
           done
 
           # ── Codesign ──
-          for f in "$TOOLS_DIR"/{gs,pngquant,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          for f in "$TOOLS_DIR"/{gs,pngquant,cwebp,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           echo "✅ macOS ARM bundle complete"
           ls -la "$TOOLS_DIR/"
@@ -126,11 +127,12 @@ jobs:
           # ── All tools from conda-forge (x86_64, minos=11.0) ──
           curl -Ls "https://micro.mamba.pm/api/micromamba/osx-64/latest" | tar -xvj bin/micromamba
           ./bin/micromamba create -y -p /tmp/conda-env -c conda-forge \
-            ghostscript pngquant libjxl-tools=0.11.2
+            ghostscript pngquant libjxl-tools=0.11.2 libwebp-tools
           cp /tmp/conda-env/bin/gs       "$TOOLS_DIR/gs"
           cp /tmp/conda-env/bin/pngquant  "$TOOLS_DIR/pngquant"
           cp /tmp/conda-env/bin/cjpegli   "$TOOLS_DIR/cjpegli"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"
+          cp /tmp/conda-env/bin/cwebp     "$TOOLS_DIR/cwebp"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/cwebp"
 
           # ── GS resources from conda ──
           GS_SHARE="/tmp/conda-env/share/ghostscript"
@@ -143,7 +145,7 @@ jobs:
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
           # ── Bundle dylibs (search conda lib dir for @rpath resolution) ──
-          for t in gs pngquant cjpegli ect; do
+          for t in gs pngquant cwebp cjpegli ect; do
             if [ -f "$TOOLS_DIR/$t" ]; then
               dylibbundler -of -b \
                 -s "/tmp/conda-env/lib" \
@@ -154,7 +156,7 @@ jobs:
           done
 
           # ── Codesign ──
-          for f in "$TOOLS_DIR"/{gs,pngquant,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          for f in "$TOOLS_DIR"/{gs,pngquant,cwebp,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           echo "✅ macOS x64 bundle complete"
           ls -la "$TOOLS_DIR/"
@@ -230,6 +232,18 @@ jobs:
           if ($ectExe) {
             Copy-Item $ectExe.FullName "$toolsDir\ect.exe"
             Write-Host "✅ Copied ECT"
+          }
+
+          # Download cwebp from Google
+          $webpUrl = "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0-windows-x64.zip"
+          $webpZip = "$env:TEMP\webp.zip"
+          $webpExtract = "$env:TEMP\webp"
+          Invoke-WebRequest -Uri $webpUrl -OutFile $webpZip
+          Expand-Archive -Path $webpZip -DestinationPath $webpExtract -Force
+          $cwExe = Get-ChildItem $webpExtract -Recurse -Filter "cwebp.exe" | Select-Object -First 1
+          if ($cwExe) {
+            Copy-Item $cwExe.FullName "$toolsDir\cwebp.exe"
+            Write-Host "✅ Copied cwebp.exe"
           }
 
           Write-Host "✅ Final bundled tools:"

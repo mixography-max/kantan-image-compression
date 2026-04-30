@@ -17,6 +17,8 @@ interface Settings {
   stripMetadata: boolean;
   maxWidth: number;
   maxHeight: number;
+  convertWebp: boolean;
+  targetSizeKb: number;
 }
 
 interface Props {
@@ -100,6 +102,8 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
           progressiveJpeg: settings.progressiveJpeg,
           maxWidth: settings.maxWidth,
           maxHeight: settings.maxWidth, // Use maxWidth for both (longest edge)
+          convertWebp: settings.convertWebp,
+          targetSizeKb: settings.targetSizeKb,
           outputDir: outputDir || undefined,
         },
       });

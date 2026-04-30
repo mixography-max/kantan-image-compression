@@ -22,6 +22,8 @@ const App: React.FC = () => {
     stripMetadata: true,
     maxWidth: 0,
     maxHeight: 0,
+    convertWebp: false,
+    targetSizeKb: 0,
   });
 
   // Load saved output directory on mount

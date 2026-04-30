@@ -13,6 +13,8 @@ interface Settings {
   stripMetadata: boolean;
   maxWidth: number;
   maxHeight: number;
+  convertWebp: boolean;
+  targetSizeKb: number;
 }
 
 interface Props {
@@ -129,39 +131,61 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
       <div className="setting-group">
         <label className="setting-group-title">📄 PDF 圧縮設定</label>
         <div className="setting-item">
-          <label>プリセット</label>
-          <select value={currentPresetLabel} onChange={handlePreset}>
-            <option value="" disabled>カスタム</option>
-            {PDF_PRESETS.map(p => (
-              <option key={p.label} value={p.label}>{p.label}</option>
-            ))}
-          </select>
-        </div>
-        <div className="setting-item">
-          <label>解像度 (DPI)</label>
+          <label>📏 サイズ目標 (KB)</label>
           <input
-            type="range"
-            name="pdfDpi"
-            min={72}
-            max={600}
-            step={1}
-            value={settings.pdfDpi}
+            type="number"
+            name="targetSizeKb"
+            min={0}
+            max={100000}
+            step={100}
+            value={settings.targetSizeKb}
             onChange={handleChange}
+            placeholder="0 = 品質指定モード"
           />
-          <span>{settings.pdfDpi} dpi</span>
+          <span className="setting-hint">
+            {settings.targetSizeKb === 0
+              ? '品質指定モード'
+              : `${(settings.targetSizeKb / 1024).toFixed(1)} MB 以下を目標`}
+          </span>
         </div>
-        <div className="setting-item">
-          <label>画像品質 (JPEG Q)</label>
-          <input
-            type="range"
-            name="pdfJpegQ"
-            min={10}
-            max={100}
-            value={settings.pdfJpegQ}
-            onChange={handleChange}
-          />
-          <span>{settings.pdfJpegQ}%</span>
-        </div>
+        {settings.targetSizeKb === 0 && (
+          <>
+            <div className="setting-item">
+              <label>プリセット</label>
+              <select value={currentPresetLabel} onChange={handlePreset}>
+                <option value="" disabled>カスタム</option>
+                {PDF_PRESETS.map(p => (
+                  <option key={p.label} value={p.label}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="setting-item">
+              <label>解像度 (DPI)</label>
+              <input
+                type="range"
+                name="pdfDpi"
+                min={72}
+                max={600}
+                step={1}
+                value={settings.pdfDpi}
+                onChange={handleChange}
+              />
+              <span>{settings.pdfDpi} dpi</span>
+            </div>
+            <div className="setting-item">
+              <label>画像品質 (JPEG Q)</label>
+              <input
+                type="range"
+                name="pdfJpegQ"
+                min={10}
+                max={100}
+                value={settings.pdfJpegQ}
+                onChange={handleChange}
+              />
+              <span>{settings.pdfJpegQ}%</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="setting-item">
@@ -179,6 +203,17 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
 
       <div className="setting-group">
         <label className="setting-group-title">🔧 共通オプション</label>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              name="convertWebp"
+              checked={settings.convertWebp}
+              onChange={handleChange}
+            />
+            🌐 WebP に変換（JPEG/PNG → WebP）
+          </label>
+        </div>
         <div className="setting-item">
           <label>
             <input
