@@ -603,12 +603,31 @@ fn compress_png(src: &Path, dst: &Path, colors: u32) -> Result<(), String> {
     let pngquant = resolve_tool("pngquant");
     if tool_exists(&pngquant) {
         fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;
-        run_tool(&pngquant, &[
+
+        // Try with quality constraint first
+        let pq_result = run_tool(&pngquant, &[
             "--force", "--quality=60-95",
             &colors.to_string(),
             "--output", dst.to_str().unwrap(),
             "--", dst.to_str().unwrap(),
-        ])?;
+        ]);
+
+        if pq_result.is_err() {
+            // Exit code 99 = quality too low for constraint.
+            // Retry without quality constraint (allow any quality).
+            fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;
+            let retry = run_tool(&pngquant, &[
+                "--force", "--quality=0-100",
+                &colors.to_string(),
+                "--output", dst.to_str().unwrap(),
+                "--", dst.to_str().unwrap(),
+            ]);
+            if retry.is_err() {
+                // pngquant completely failed — fall back to source copy
+                // (Oxipng will still optimize losslessly below)
+                fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;
+            }
+        }
 
         // Second pass: Oxipng (strip metadata + filter optimization)
         let oxipng_opts = oxipng::Options {
