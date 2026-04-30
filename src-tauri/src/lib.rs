@@ -425,6 +425,195 @@ fn compute_ssim(original: &Path, compressed: &Path) -> Result<f64, String> {
     Ok(ssim_sum / block_count as f64)
 }
 
+// ---------------------------------------------------------------------------
+// CIEDE2000 Color Difference (ΔE) — perceptual color similarity
+// More accurate than SSIM for detecting color shifts in palette reduction.
+// Implementation follows ISO/CIE 11664-6:2014.
+// ---------------------------------------------------------------------------
+
+/// sRGB component (0-255) → linear RGB (0.0-1.0)
+fn srgb_to_linear(v: f64) -> f64 {
+    let s = v / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Linear RGB → CIE XYZ (D65 illuminant, sRGB primaries)
+fn linear_rgb_to_xyz(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b;
+    let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+    let z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b;
+    (x, y, z)
+}
+
+/// CIE XYZ → CIE L*a*b* (D65 reference white)
+fn xyz_to_lab(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+    // D65 reference white
+    const XN: f64 = 0.95047;
+    const YN: f64 = 1.00000;
+    const ZN: f64 = 1.08883;
+
+    fn f(t: f64) -> f64 {
+        const DELTA: f64 = 6.0 / 29.0;
+        if t > DELTA * DELTA * DELTA {
+            t.cbrt()
+        } else {
+            t / (3.0 * DELTA * DELTA) + 4.0 / 29.0
+        }
+    }
+
+    let fx = f(x / XN);
+    let fy = f(y / YN);
+    let fz = f(z / ZN);
+
+    let l = 116.0 * fy - 16.0;
+    let a = 500.0 * (fx - fy);
+    let b = 200.0 * (fy - fz);
+    (l, a, b)
+}
+
+/// sRGB pixel (0-255) → CIE L*a*b*
+fn srgb_to_lab(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let rl = srgb_to_linear(r as f64);
+    let gl = srgb_to_linear(g as f64);
+    let bl = srgb_to_linear(b as f64);
+    let (x, y, z) = linear_rgb_to_xyz(rl, gl, bl);
+    xyz_to_lab(x, y, z)
+}
+
+/// CIEDE2000 color difference between two L*a*b* colors.
+/// Returns ΔE₀₀ value. Lower = more similar. ~1.0 = just noticeable.
+fn ciede2000(l1: f64, a1: f64, b1: f64, l2: f64, a2: f64, b2: f64) -> f64 {
+    use std::f64::consts::PI;
+
+    let c1_ab = (a1 * a1 + b1 * b1).sqrt();
+    let c2_ab = (a2 * a2 + b2 * b2).sqrt();
+    let c_ab_mean = (c1_ab + c2_ab) / 2.0;
+
+    let c_ab_mean_pow7 = c_ab_mean.powi(7);
+    let g = 0.5 * (1.0 - (c_ab_mean_pow7 / (c_ab_mean_pow7 + 25.0_f64.powi(7))).sqrt());
+
+    let a1_prime = a1 * (1.0 + g);
+    let a2_prime = a2 * (1.0 + g);
+
+    let c1_prime = (a1_prime * a1_prime + b1 * b1).sqrt();
+    let c2_prime = (a2_prime * a2_prime + b2 * b2).sqrt();
+
+    let h1_prime = b1.atan2(a1_prime).to_degrees();
+    let h1_prime = if h1_prime < 0.0 { h1_prime + 360.0 } else { h1_prime };
+    let h2_prime = b2.atan2(a2_prime).to_degrees();
+    let h2_prime = if h2_prime < 0.0 { h2_prime + 360.0 } else { h2_prime };
+
+    // Differences
+    let dl_prime = l2 - l1;
+    let dc_prime = c2_prime - c1_prime;
+
+    let dh_prime_raw = if c1_prime * c2_prime == 0.0 {
+        0.0
+    } else if (h2_prime - h1_prime).abs() <= 180.0 {
+        h2_prime - h1_prime
+    } else if h2_prime - h1_prime > 180.0 {
+        h2_prime - h1_prime - 360.0
+    } else {
+        h2_prime - h1_prime + 360.0
+    };
+    let dh_prime = 2.0 * (c1_prime * c2_prime).sqrt() * (dh_prime_raw / 2.0 * PI / 180.0).sin();
+
+    // Arithmetic means
+    let l_prime_mean = (l1 + l2) / 2.0;
+    let c_prime_mean = (c1_prime + c2_prime) / 2.0;
+
+    let h_prime_mean = if c1_prime * c2_prime == 0.0 {
+        h1_prime + h2_prime
+    } else if (h1_prime - h2_prime).abs() <= 180.0 {
+        (h1_prime + h2_prime) / 2.0
+    } else if h1_prime + h2_prime < 360.0 {
+        (h1_prime + h2_prime + 360.0) / 2.0
+    } else {
+        (h1_prime + h2_prime - 360.0) / 2.0
+    };
+
+    let t = 1.0
+        - 0.17 * ((h_prime_mean - 30.0) * PI / 180.0).cos()
+        + 0.24 * ((2.0 * h_prime_mean) * PI / 180.0).cos()
+        + 0.32 * ((3.0 * h_prime_mean + 6.0) * PI / 180.0).cos()
+        - 0.20 * ((4.0 * h_prime_mean - 63.0) * PI / 180.0).cos();
+
+    let sl = 1.0 + 0.015 * (l_prime_mean - 50.0).powi(2) / (20.0 + (l_prime_mean - 50.0).powi(2)).sqrt();
+    let sc = 1.0 + 0.045 * c_prime_mean;
+    let sh = 1.0 + 0.015 * c_prime_mean * t;
+
+    let c_prime_mean_pow7 = c_prime_mean.powi(7);
+    let rt_term = -2.0 * (c_prime_mean_pow7 / (c_prime_mean_pow7 + 25.0_f64.powi(7))).sqrt()
+        * (60.0 * (-((h_prime_mean - 275.0) / 25.0).powi(2)).exp() * PI / 180.0).sin();
+
+    let result = ((dl_prime / sl).powi(2)
+        + (dc_prime / sc).powi(2)
+        + (dh_prime / sh).powi(2)
+        + rt_term * (dc_prime / sc) * (dh_prime / sh))
+        .sqrt();
+
+    if result.is_nan() { 0.0 } else { result }
+}
+
+/// Compute average and max CIEDE2000 ΔE between two images.
+/// Uses sampling (every SAMPLE_STEP-th pixel) for performance.
+/// Returns (average_dE, max_dE).
+fn compute_delta_e(original: &Path, compressed: &Path) -> Result<(f64, f64), String> {
+    let img_a = image::open(original)
+        .map_err(|e| format!("元画像の読み込み失敗: {}", e))?
+        .to_rgba8();
+    let img_b = image::open(compressed)
+        .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?
+        .to_rgba8();
+
+    let (w_a, h_a) = img_a.dimensions();
+    let (w_b, h_b) = img_b.dimensions();
+
+    // If sizes differ, resize img_b to match img_a
+    let img_b = if w_a != w_b || h_a != h_b {
+        image::imageops::resize(&img_b, w_a, h_a, image::imageops::FilterType::Lanczos3)
+    } else {
+        img_b
+    };
+
+    let pixels_a = img_a.as_raw();
+    let pixels_b = img_b.as_raw();
+    let total_pixels = (w_a * h_a) as usize;
+
+    // Sample every 4th pixel for performance (covers ~25% of image)
+    const SAMPLE_STEP: usize = 4;
+    let mut sum_de = 0.0f64;
+    let mut max_de = 0.0f64;
+    let mut count = 0u64;
+
+    for i in (0..total_pixels).step_by(SAMPLE_STEP) {
+        let idx = i * 4; // RGBA
+        if idx + 3 >= pixels_a.len() || idx + 3 >= pixels_b.len() {
+            break;
+        }
+
+        let (l1, a1, b1) = srgb_to_lab(pixels_a[idx], pixels_a[idx + 1], pixels_a[idx + 2]);
+        let (l2, a2, b2) = srgb_to_lab(pixels_b[idx], pixels_b[idx + 1], pixels_b[idx + 2]);
+
+        let de = ciede2000(l1, a1, b1, l2, a2, b2);
+        sum_de += de;
+        if de > max_de {
+            max_de = de;
+        }
+        count += 1;
+    }
+
+    if count == 0 {
+        return Ok((0.0, 0.0));
+    }
+    Ok((sum_de / count as f64, max_de))
+}
+
+
 /// Auto-quality search for JPEG using binary search + SSIM
 /// Target: SSIM >= 0.95 with minimum file size
 fn auto_quality_jpeg(
@@ -485,23 +674,27 @@ fn auto_quality_jpeg(
     Ok(best_q)
 }
 
-/// Auto-quality search for PNG using binary search over color count + SSIM
-/// Target: SSIM >= 0.95 with minimum file size
+/// Auto-quality search for PNG using binary search over color count.
+/// Uses composite evaluation: SSIM + CIEDE2000 ΔE (color difference).
+/// Target: SSIM ≥ 0.98 AND avg ΔE ≤ 1.5 AND max ΔE ≤ 5.0
 fn auto_quality_png(
     src: &Path,
     dst: &Path,
     app: &AppHandle,
     filename: &str,
 ) -> Result<u32, String> {
-    let target_ssim: f64 = 0.95;
-    // Search range: 8 to 256 colors (powers-of-2 aware steps)
-    let mut lo: u32 = 8;
+    let target_ssim: f64 = 0.98;
+    let target_avg_de: f64 = 1.5;
+    let target_max_de: f64 = 5.0;
+    // Search range: 32 to 256 colors (below 32 is rarely usable)
+    let mut lo: u32 = 32;
     let mut hi: u32 = 256;
     let mut best_c: u32 = 256;
     let mut iteration = 0;
 
     let _ = app.emit("auto-quality-log", format!(
-        "🔍 {} — PNG自動色数探索開始 (目標: SSIM ≥ {:.2})", filename, target_ssim
+        "🔍 {} — PNG自動色数探索開始 (目標: SSIM≥{:.2}, ΔE avg≤{:.1}, max≤{:.1})",
+        filename, target_ssim, target_avg_de, target_max_de
     ));
 
     while lo <= hi {
@@ -511,17 +704,23 @@ fn auto_quality_png(
         // Compress at this color count
         compress_png(src, dst, mid)?;
         let ssim = compute_ssim(src, dst)?;
+        let (avg_de, max_de) = compute_delta_e(src, dst)?;
         let size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
         let size_kb = size as f64 / 1024.0;
 
-        let status = if ssim >= target_ssim { "✅" } else { "⚠️" };
+        let passes_ssim = ssim >= target_ssim;
+        let passes_avg_de = avg_de <= target_avg_de;
+        let passes_max_de = max_de <= target_max_de;
+        let passes_all = passes_ssim && passes_avg_de && passes_max_de;
+
+        let status = if passes_all { "✅" } else { "⚠️" };
         let msg = format!(
-            "  #{} 色数={:3} → SSIM={:.4} {} ({:.0}KB)",
-            iteration, mid, ssim, status, size_kb
+            "  #{} 色数={:3} → SSIM={:.4} ΔE(avg={:.2}, max={:.1}) {} ({:.0}KB)",
+            iteration, mid, ssim, avg_de, max_de, status, size_kb
         );
         let _ = app.emit("auto-quality-log", msg);
 
-        if ssim >= target_ssim {
+        if passes_all {
             best_c = mid;
             hi = mid.saturating_sub(1); // Try fewer colors
         } else {
@@ -534,11 +733,12 @@ fn auto_quality_png(
     // Final compress at best color count
     compress_png(src, dst, best_c)?;
     let final_ssim = compute_ssim(src, dst)?;
+    let (final_avg_de, final_max_de) = compute_delta_e(src, dst)?;
     let final_size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
 
     let _ = app.emit("auto-quality-log", format!(
-        "🎯 {} — 最適色数 {} (SSIM={:.4}, {:.0}KB)",
-        filename, best_c, final_ssim, final_size as f64 / 1024.0
+        "🎯 {} — 最適色数 {} (SSIM={:.4}, ΔE avg={:.2}/max={:.1}, {:.0}KB)",
+        filename, best_c, final_ssim, final_avg_de, final_max_de, final_size as f64 / 1024.0
     ));
 
     Ok(best_c)
