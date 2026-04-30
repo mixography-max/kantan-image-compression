@@ -127,12 +127,21 @@ jobs:
           # ── All tools from conda-forge (x86_64, minos=11.0) ──
           curl -Ls "https://micro.mamba.pm/api/micromamba/osx-64/latest" | tar -xvj bin/micromamba
           ./bin/micromamba create -y -p /tmp/conda-env -c conda-forge \
-            ghostscript pngquant libjxl-tools=0.11.2 libwebp-tools
+            ghostscript pngquant libjxl-tools=0.11.2
           cp /tmp/conda-env/bin/gs       "$TOOLS_DIR/gs"
           cp /tmp/conda-env/bin/pngquant  "$TOOLS_DIR/pngquant"
           cp /tmp/conda-env/bin/cjpegli   "$TOOLS_DIR/cjpegli"
-          cp /tmp/conda-env/bin/cwebp     "$TOOLS_DIR/cwebp"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/cwebp"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"
+
+          # ── cwebp from Google releases (x64 macOS) ──
+          curl -L -o /tmp/libwebp.tar.gz "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0-mac-x86-64.tar.gz"
+          tar -xzf /tmp/libwebp.tar.gz -C /tmp/
+          CWEBP_BIN=$(find /tmp/libwebp-* -name 'cwebp' -type f | head -1)
+          if [ -n "$CWEBP_BIN" ]; then
+            cp "$CWEBP_BIN" "$TOOLS_DIR/cwebp"
+            chmod +x "$TOOLS_DIR/cwebp"
+            echo "✅ cwebp installed from Google releases"
+          fi
 
           # ── GS resources from conda ──
           GS_SHARE="/tmp/conda-env/share/ghostscript"
