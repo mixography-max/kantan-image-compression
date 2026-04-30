@@ -94,10 +94,12 @@ jobs:
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
           # ── Bundle dylibs ──
+          BREW_LIB="$(brew --prefix)/lib"
           for t in gs pngquant cwebp avifenc cjpegli cjxl ect; do
             if [ -f "$TOOLS_DIR/$t" ]; then
               dylibbundler -of -b \
                 -s "/tmp/conda-jxl/lib" \
+                -s "$BREW_LIB" \
                 -x "$TOOLS_DIR/$t" \
                 -d "$LIB_DIR" \
                 -p "@executable_path/lib"
@@ -129,13 +131,32 @@ jobs:
           # ── All tools from conda-forge (x86_64, minos=11.0) ──
           curl -Ls "https://micro.mamba.pm/api/micromamba/osx-64/latest" | tar -xvj bin/micromamba
           ./bin/micromamba create -y -p /tmp/conda-env -c conda-forge \
-            ghostscript pngquant libjxl-tools=0.11.2 libavif
+            ghostscript pngquant libjxl-tools=0.11.2 aom dav1d rav1e svt-av1
           cp /tmp/conda-env/bin/gs       "$TOOLS_DIR/gs"
           cp /tmp/conda-env/bin/pngquant  "$TOOLS_DIR/pngquant"
           cp /tmp/conda-env/bin/cjpegli   "$TOOLS_DIR/cjpegli"
           cp /tmp/conda-env/bin/cjxl      "$TOOLS_DIR/cjxl"
-          cp /tmp/conda-env/bin/avifenc   "$TOOLS_DIR/avifenc"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/cjxl" "$TOOLS_DIR/avifenc"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/cjxl"
+
+          # ── avifenc from source (conda-forge has no CLI tools package) ──
+          curl -L -o /tmp/libavif.tar.gz "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.4.1.tar.gz"
+          tar -xzf /tmp/libavif.tar.gz -C /tmp/
+          cd /tmp/libavif-1.4.1
+          cmake -B build \
+            -DCMAKE_PREFIX_PATH="/tmp/conda-env" \
+            -DAVIF_CODEC_AOM=SYSTEM -DAVIF_CODEC_DAV1D=SYSTEM \
+            -DAVIF_CODEC_RAV1E=SYSTEM -DAVIF_CODEC_SVT=SYSTEM \
+            -DAVIF_BUILD_APPS=ON -DAVIF_BUILD_EXAMPLES=OFF \
+            -DCMAKE_BUILD_TYPE=Release 2>&1 || true
+          cmake --build build --target avifenc -j$(sysctl -n hw.ncpu) 2>&1 || true
+          if [ -f build/avifenc ]; then
+            cp build/avifenc "$TOOLS_DIR/avifenc"
+            chmod +x "$TOOLS_DIR/avifenc"
+            echo "✅ avifenc built from source"
+          else
+            echo "⚠️ avifenc build failed, AVIF conversion will be skipped"
+          fi
+          cd -
 
           # ── cwebp from Google releases (x64 macOS) ──
           curl -L -o /tmp/libwebp.tar.gz "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0-mac-x86-64.tar.gz"
@@ -162,6 +183,7 @@ jobs:
             if [ -f "$TOOLS_DIR/$t" ]; then
               dylibbundler -of -b \
                 -s "/tmp/conda-env/lib" \
+                -s "/tmp/libavif-1.4.1/build" \
                 -x "$TOOLS_DIR/$t" \
                 -d "$LIB_DIR" \
                 -p "@executable_path/lib"
