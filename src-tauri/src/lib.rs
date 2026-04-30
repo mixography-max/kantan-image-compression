@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
+use tauri::{AppHandle, Emitter};
 
 // ---------------------------------------------------------------------------
 // Settings & Result types
@@ -24,6 +25,10 @@ struct CompressSettings {
     max_height: Option<u32>,
     convert_webp: Option<bool>,
     target_size_kb: Option<u64>,
+    convert_jxl: Option<bool>,
+    jxl_lossless: Option<bool>,
+    convert_avif: Option<bool>,
+    auto_quality: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -340,6 +345,206 @@ fn run_tool_with_cwd(exe: &str, args: &[&str], cwd: &str) -> Result<(), String> 
 }
 
 // ---------------------------------------------------------------------------
+// SSIM calculation (luminance-based structural similarity)
+// ---------------------------------------------------------------------------
+
+fn compute_ssim(original: &Path, compressed: &Path) -> Result<f64, String> {
+    let img_a = image::open(original)
+        .map_err(|e| format!("元画像の読み込み失敗: {}", e))?
+        .to_luma8();
+    let img_b = image::open(compressed)
+        .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?
+        .to_luma8();
+
+    let (w_a, h_a) = img_a.dimensions();
+    let (w_b, h_b) = img_b.dimensions();
+
+    // If sizes differ, resize img_b to match img_a
+    let img_b = if w_a != w_b || h_a != h_b {
+        image::imageops::resize(&img_b, w_a, h_a, image::imageops::FilterType::Lanczos3)
+    } else {
+        img_b
+    };
+
+    let (width, height) = (w_a as usize, h_a as usize);
+    let pixels_a: &[u8] = img_a.as_raw();
+    let pixels_b: &[u8] = img_b.as_raw();
+
+    // SSIM constants (for 8-bit images)
+    let c1: f64 = (0.01 * 255.0) * (0.01 * 255.0); // 6.5025
+    let c2: f64 = (0.03 * 255.0) * (0.03 * 255.0); // 58.5225
+
+    // Compute SSIM over 8x8 blocks
+    let block_size = 8usize;
+    let mut ssim_sum = 0.0f64;
+    let mut block_count = 0u64;
+
+    let bx_count = width / block_size;
+    let by_count = height / block_size;
+
+    for by in 0..by_count {
+        for bx in 0..bx_count {
+            let mut sum_a = 0.0f64;
+            let mut sum_b = 0.0f64;
+            let mut sum_a2 = 0.0f64;
+            let mut sum_b2 = 0.0f64;
+            let mut sum_ab = 0.0f64;
+            let n = (block_size * block_size) as f64;
+
+            for dy in 0..block_size {
+                for dx in 0..block_size {
+                    let y = by * block_size + dy;
+                    let x = bx * block_size + dx;
+                    let idx = y * width + x;
+                    let a = pixels_a[idx] as f64;
+                    let b = pixels_b[idx] as f64;
+                    sum_a += a;
+                    sum_b += b;
+                    sum_a2 += a * a;
+                    sum_b2 += b * b;
+                    sum_ab += a * b;
+                }
+            }
+
+            let mu_a = sum_a / n;
+            let mu_b = sum_b / n;
+            let sigma_a2 = sum_a2 / n - mu_a * mu_a;
+            let sigma_b2 = sum_b2 / n - mu_b * mu_b;
+            let sigma_ab = sum_ab / n - mu_a * mu_b;
+
+            let numerator = (2.0 * mu_a * mu_b + c1) * (2.0 * sigma_ab + c2);
+            let denominator = (mu_a * mu_a + mu_b * mu_b + c1) * (sigma_a2 + sigma_b2 + c2);
+            ssim_sum += numerator / denominator;
+            block_count += 1;
+        }
+    }
+
+    if block_count == 0 {
+        return Ok(1.0); // Trivially similar (very small image)
+    }
+    Ok(ssim_sum / block_count as f64)
+}
+
+/// Auto-quality search for JPEG using binary search + SSIM
+/// Target: SSIM >= 0.95 with minimum file size
+fn auto_quality_jpeg(
+    src: &Path,
+    dst: &Path,
+    progressive: bool,
+    strip_meta: bool,
+    app: &AppHandle,
+    filename: &str,
+) -> Result<u32, String> {
+    let target_ssim: f64 = 0.95;
+    let mut lo: u32 = 30;
+    let mut hi: u32 = 95;
+    let mut best_q: u32 = 85;
+    let mut iteration = 0;
+
+    let _ = app.emit("auto-quality-log", format!(
+        "🔍 {} — SSIM自動品質探索開始 (目標: SSIM ≥ {:.2})", filename, target_ssim
+    ));
+
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        iteration += 1;
+
+        // Compress at this quality
+        compress_jpeg(src, dst, mid, progressive, strip_meta)?;
+        let ssim = compute_ssim(src, dst)?;
+        let size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+        let size_kb = size as f64 / 1024.0;
+
+        let status = if ssim >= target_ssim { "✅" } else { "⚠️" };
+        let msg = format!(
+            "  #{} Q={:3} → SSIM={:.4} {} ({:.0}KB)",
+            iteration, mid, ssim, status, size_kb
+        );
+        let _ = app.emit("auto-quality-log", msg);
+
+        if ssim >= target_ssim {
+            best_q = mid;
+            hi = mid.saturating_sub(1); // Try lower quality
+        } else {
+            lo = mid + 1; // Need higher quality
+        }
+
+        if lo > hi { break; }
+    }
+
+    // Final compress at best quality
+    compress_jpeg(src, dst, best_q, progressive, strip_meta)?;
+    let final_ssim = compute_ssim(src, dst)?;
+    let final_size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+
+    let _ = app.emit("auto-quality-log", format!(
+        "🎯 {} — 最適品質 Q={} (SSIM={:.4}, {:.0}KB)",
+        filename, best_q, final_ssim, final_size as f64 / 1024.0
+    ));
+
+    Ok(best_q)
+}
+
+/// Auto-quality search for PNG using binary search over color count + SSIM
+/// Target: SSIM >= 0.95 with minimum file size
+fn auto_quality_png(
+    src: &Path,
+    dst: &Path,
+    app: &AppHandle,
+    filename: &str,
+) -> Result<u32, String> {
+    let target_ssim: f64 = 0.95;
+    // Search range: 8 to 256 colors (powers-of-2 aware steps)
+    let mut lo: u32 = 8;
+    let mut hi: u32 = 256;
+    let mut best_c: u32 = 256;
+    let mut iteration = 0;
+
+    let _ = app.emit("auto-quality-log", format!(
+        "🔍 {} — PNG自動色数探索開始 (目標: SSIM ≥ {:.2})", filename, target_ssim
+    ));
+
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        iteration += 1;
+
+        // Compress at this color count
+        compress_png(src, dst, mid)?;
+        let ssim = compute_ssim(src, dst)?;
+        let size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+        let size_kb = size as f64 / 1024.0;
+
+        let status = if ssim >= target_ssim { "✅" } else { "⚠️" };
+        let msg = format!(
+            "  #{} 色数={:3} → SSIM={:.4} {} ({:.0}KB)",
+            iteration, mid, ssim, status, size_kb
+        );
+        let _ = app.emit("auto-quality-log", msg);
+
+        if ssim >= target_ssim {
+            best_c = mid;
+            hi = mid.saturating_sub(1); // Try fewer colors
+        } else {
+            lo = mid + 1; // Need more colors
+        }
+
+        if lo > hi { break; }
+    }
+
+    // Final compress at best color count
+    compress_png(src, dst, best_c)?;
+    let final_ssim = compute_ssim(src, dst)?;
+    let final_size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+
+    let _ = app.emit("auto-quality-log", format!(
+        "🎯 {} — 最適色数 {} (SSIM={:.4}, {:.0}KB)",
+        filename, best_c, final_ssim, final_size as f64 / 1024.0
+    ));
+
+    Ok(best_c)
+}
+
+// ---------------------------------------------------------------------------
 // Compression functions
 // ---------------------------------------------------------------------------
 
@@ -504,6 +709,48 @@ fn convert_to_webp(src: &Path, dst: &Path, quality: u32) -> Result<(), String> {
         ])
     } else {
         Err("cwebp が見つかりません。WebP 変換はスキップされます。".to_string())
+    }
+}
+
+fn convert_to_jxl(src: &Path, dst: &Path, quality: u32, lossless: bool) -> Result<(), String> {
+    let cjxl = resolve_tool("cjxl");
+    if tool_exists(&cjxl) {
+        let src_ext = src.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        if lossless && (src_ext == "jpg" || src_ext == "jpeg") {
+            // Lossless JPEG → JXL transcoding (bit-perfect roundtrip)
+            run_tool(&cjxl, &[
+                src.to_str().unwrap(),
+                dst.to_str().unwrap(),
+            ])
+        } else {
+            // Lossy conversion with quality parameter
+            run_tool(&cjxl, &[
+                src.to_str().unwrap(),
+                dst.to_str().unwrap(),
+                "-q", &quality.to_string(),
+            ])
+        }
+    } else {
+        Err("cjxl が見つかりません。JPEG XL 変換はスキップされます。".to_string())
+    }
+}
+
+fn convert_to_avif(src: &Path, dst: &Path, quality: u32) -> Result<(), String> {
+    let avifenc = resolve_tool("avifenc");
+    if tool_exists(&avifenc) {
+        // Map quality (0-100) to AVIF min/max quantizer
+        // avifenc uses -q (quality, 0-100 where 100 is lossless)
+        run_tool(&avifenc, &[
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "-q", &quality.to_string(),
+            "-s", "6",   // speed 6 (balanced speed/quality)
+        ])
+    } else {
+        Err("avifenc が見つかりません。AVIF 変換はスキップされます。".to_string())
     }
 }
 
@@ -789,7 +1036,7 @@ fn collect_files_recursive(dir: &Path, extensions: &[&str], out: &mut Vec<String
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResult> {
+fn compress(app: AppHandle, inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResult> {
     let out_dir = output_dir_from(settings.output_dir.as_deref());
     let jpeg_q = settings.jpeg_quality.unwrap_or(85);
     let png_c = settings.png_colors.unwrap_or(256);
@@ -802,6 +1049,10 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
     let max_h = settings.max_height.unwrap_or(0);
     let webp_mode = settings.convert_webp.unwrap_or(false);
     let target_kb = settings.target_size_kb.unwrap_or(0);
+    let jxl_mode = settings.convert_jxl.unwrap_or(false);
+    let jxl_lossless = settings.jxl_lossless.unwrap_or(true);
+    let avif_mode = settings.convert_avif.unwrap_or(false);
+    let auto_q = settings.auto_quality.unwrap_or(false);
 
     let supported = ["jpg", "jpeg", "png", "pdf", "docx", "xlsx", "pptx"];
 
@@ -834,18 +1085,47 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
         let original_size = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
         let stem = src.file_stem().unwrap_or_default().to_string_lossy();
 
-        // Determine output extension (WebP conversion for images)
+        // Determine output extension (WebP/JXL/AVIF conversion for images)
         let is_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png");
-        let out_ext = if webp_mode && is_image { "webp".to_string() } else { ext.clone() };
+        let out_ext = if jxl_mode && is_image {
+            "jxl".to_string()
+        } else if avif_mode && is_image {
+            "avif".to_string()
+        } else if webp_mode && is_image {
+            "webp".to_string()
+        } else {
+            ext.clone()
+        };
         let out_name = format!("{}_compressed.{}", stem, out_ext);
         let dst = out_dir.join(&out_name);
 
-        // Resize if needed (images only)
-        let resized_path = resize_if_needed(src, max_w, max_h).ok().flatten();
+        // Resize if needed (images only, skip resize for lossless JXL)
+        let skip_resize = jxl_mode && jxl_lossless && matches!(ext.as_str(), "jpg" | "jpeg");
+        let resized_path = if skip_resize {
+            None
+        } else {
+            resize_if_needed(src, max_w, max_h).ok().flatten()
+        };
         let actual_src = resized_path.as_deref().unwrap_or(src);
 
-        let compress_result = if webp_mode && is_image {
+        let compress_result = if jxl_mode && is_image {
+            convert_to_jxl(actual_src, &dst, jpeg_q, jxl_lossless)
+        } else if avif_mode && is_image {
+            convert_to_avif(actual_src, &dst, jpeg_q)
+        } else if webp_mode && is_image {
             convert_to_webp(actual_src, &dst, jpeg_q)
+        } else if auto_q && matches!(ext.as_str(), "jpg" | "jpeg") {
+            // SSIM auto-quality for JPEG
+            auto_quality_jpeg(
+                actual_src, &dst, progressive, strip_meta, &app,
+                &src.file_name().unwrap_or_default().to_string_lossy(),
+            ).map(|_| ())
+        } else if auto_q && ext == "png" {
+            // SSIM auto-quality for PNG (color count search)
+            auto_quality_png(
+                actual_src, &dst, &app,
+                &src.file_name().unwrap_or_default().to_string_lossy(),
+            ).map(|_| ())
         } else {
             match ext.as_str() {
                 "jpg" | "jpeg" => compress_jpeg(actual_src, &dst, jpeg_q, progressive, strip_meta),
@@ -901,6 +1181,9 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                     gs パス: {}\n\
                     pngquant パス: {}\n\
                     cjpegli パス: {}\n\
+                    cjxl パス: {}\n\
+                    cwebp パス: {}\n\
+                    avifenc パス: {}\n\
                     ect パス: {}\n\
                     bundled_tools_dir: {:?}\n\
                     gs 存在: {}\n\n\
@@ -915,6 +1198,9 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
                     resolve_tool("gs"),
                     resolve_tool("pngquant"),
                     resolve_tool("cjpegli"),
+                    resolve_tool("cjxl"),
+                    resolve_tool("cwebp"),
+                    resolve_tool("avifenc"),
                     resolve_tool("ect"),
                     bundled_tools_dir(),
                     tool_exists(&resolve_tool("gs")),

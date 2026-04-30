@@ -67,19 +67,21 @@ jobs:
           mkdir -p "$LIB_DIR"
 
           # ── Install Homebrew tools ──
-          brew install ghostscript pngquant webp dylibbundler
+          brew install ghostscript pngquant webp libavif dylibbundler
 
           cp "$(brew --prefix ghostscript)/bin/gs" "$TOOLS_DIR/gs"
           cp "$(brew --prefix pngquant)/bin/pngquant" "$TOOLS_DIR/pngquant"
           cp "$(brew --prefix webp)/bin/cwebp" "$TOOLS_DIR/cwebp"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cwebp"
+          cp "$(brew --prefix libavif)/bin/avifenc" "$TOOLS_DIR/avifenc"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cwebp" "$TOOLS_DIR/avifenc"
 
           # ── cjpegli from conda-forge (pre-built, no compilation needed) ──
           curl -Ls "https://micro.mamba.pm/api/micromamba/osx-arm64/latest" | tar -xvj bin/micromamba
           ./bin/micromamba create -y -p /tmp/conda-jxl -c conda-forge libjxl-tools=0.11.2
           cp /tmp/conda-jxl/bin/cjpegli "$TOOLS_DIR/cjpegli"
-          chmod +x "$TOOLS_DIR/cjpegli"
-          echo "✅ cjpegli installed from conda-forge"
+          cp /tmp/conda-jxl/bin/cjxl    "$TOOLS_DIR/cjxl"
+          chmod +x "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/cjxl"
+          echo "✅ cjpegli + cjxl installed from conda-forge"
 
           # ── GS resources ──
           GS_SHARE="$(brew --prefix ghostscript)/share/ghostscript"
@@ -92,7 +94,7 @@ jobs:
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
           # ── Bundle dylibs ──
-          for t in gs pngquant cwebp cjpegli ect; do
+          for t in gs pngquant cwebp avifenc cjpegli cjxl ect; do
             if [ -f "$TOOLS_DIR/$t" ]; then
               dylibbundler -of -b \
                 -s "/tmp/conda-jxl/lib" \
@@ -103,7 +105,7 @@ jobs:
           done
 
           # ── Codesign ──
-          for f in "$TOOLS_DIR"/{gs,pngquant,cwebp,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          for f in "$TOOLS_DIR"/{gs,pngquant,cwebp,avifenc,cjpegli,cjxl,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           echo "✅ macOS ARM bundle complete"
           ls -la "$TOOLS_DIR/"
@@ -127,11 +129,13 @@ jobs:
           # ── All tools from conda-forge (x86_64, minos=11.0) ──
           curl -Ls "https://micro.mamba.pm/api/micromamba/osx-64/latest" | tar -xvj bin/micromamba
           ./bin/micromamba create -y -p /tmp/conda-env -c conda-forge \
-            ghostscript pngquant libjxl-tools=0.11.2
+            ghostscript pngquant libjxl-tools=0.11.2 libavif
           cp /tmp/conda-env/bin/gs       "$TOOLS_DIR/gs"
           cp /tmp/conda-env/bin/pngquant  "$TOOLS_DIR/pngquant"
           cp /tmp/conda-env/bin/cjpegli   "$TOOLS_DIR/cjpegli"
-          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli"
+          cp /tmp/conda-env/bin/cjxl      "$TOOLS_DIR/cjxl"
+          cp /tmp/conda-env/bin/avifenc   "$TOOLS_DIR/avifenc"
+          chmod +x "$TOOLS_DIR/gs" "$TOOLS_DIR/pngquant" "$TOOLS_DIR/cjpegli" "$TOOLS_DIR/cjxl" "$TOOLS_DIR/avifenc"
 
           # ── cwebp from Google releases (x64 macOS) ──
           curl -L -o /tmp/libwebp.tar.gz "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0-mac-x86-64.tar.gz"
@@ -154,7 +158,7 @@ jobs:
           [ -n "$ECT_BIN" ] && cp "$ECT_BIN" "$TOOLS_DIR/ect" && chmod +x "$TOOLS_DIR/ect"
 
           # ── Bundle dylibs (search conda lib dir for @rpath resolution) ──
-          for t in gs pngquant cwebp cjpegli ect; do
+          for t in gs pngquant cwebp avifenc cjpegli cjxl ect; do
             if [ -f "$TOOLS_DIR/$t" ]; then
               dylibbundler -of -b \
                 -s "/tmp/conda-env/lib" \
@@ -165,7 +169,7 @@ jobs:
           done
 
           # ── Codesign ──
-          for f in "$TOOLS_DIR"/{gs,pngquant,cwebp,cjpegli,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
+          for f in "$TOOLS_DIR"/{gs,pngquant,cwebp,avifenc,cjpegli,cjxl,ect}; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           for f in "$LIB_DIR"/*.dylib; do [ -f "$f" ] && codesign --force --sign - "$f" 2>/dev/null || true; done
           echo "✅ macOS x64 bundle complete"
           ls -la "$TOOLS_DIR/"
@@ -227,6 +231,12 @@ jobs:
           if ($cjExe) {
             Copy-Item $cjExe.FullName "$toolsDir\cjpegli.exe"
             Write-Host "✅ Copied cjpegli.exe from libjxl release"
+            # Also copy cjxl.exe from the same release
+            $cjxlExe = Get-ChildItem $jxlExtract -Recurse -Filter "cjxl.exe" | Select-Object -First 1
+            if ($cjxlExe) {
+              Copy-Item $cjxlExe.FullName "$toolsDir\cjxl.exe"
+              Write-Host "✅ Copied cjxl.exe from libjxl release"
+            }
           } else {
             Write-Host "⚠️ cjpegli not found in libjxl release"
           }
@@ -257,6 +267,25 @@ jobs:
 
           Write-Host "✅ Final bundled tools:"
           Get-ChildItem "$toolsDir" -Recurse | Format-Table Name, Length
+
+          # Download avifenc via micromamba (conda-forge)
+          $mmUrl = "https://micro.mamba.pm/api/micromamba/win-64/latest"
+          $mmZip = "$env:TEMP\micromamba.tar.bz2"
+          Invoke-WebRequest -Uri $mmUrl -OutFile $mmZip
+          tar -xf $mmZip -C "$env:TEMP" Library/bin/micromamba.exe 2>$null
+          $mmExe = "$env:TEMP\Library\bin\micromamba.exe"
+          if (Test-Path $mmExe) {
+            & $mmExe create -y -p "$env:TEMP\conda-avif" -c conda-forge libavif 2>&1 | Out-Null
+            $avifExe = Get-ChildItem "$env:TEMP\conda-avif" -Recurse -Filter "avifenc.exe" | Select-Object -First 1
+            if ($avifExe) {
+              Copy-Item $avifExe.FullName "$toolsDir\avifenc.exe"
+              Write-Host "✅ Copied avifenc.exe from conda-forge"
+            } else {
+              Write-Host "⚠️ avifenc.exe not found in conda-forge"
+            }
+          } else {
+            Write-Host "⚠️ micromamba download failed, skipping avifenc"
+          }
 
       # ═══════════════════════════════════════════════════════════════
       # Build

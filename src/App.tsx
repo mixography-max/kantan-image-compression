@@ -24,6 +24,10 @@ const App: React.FC = () => {
     maxHeight: 0,
     convertWebp: false,
     targetSizeKb: 0,
+    convertJxl: false,
+    jxlLossless: true,
+    convertAvif: false,
+    autoQuality: false,
   });
 
   // Load saved output directory on mount
@@ -66,6 +70,10 @@ const App: React.FC = () => {
               <dd><strong>pngquant</strong>（減色）+ <strong>ECT</strong>（ロスレス再圧縮）の2段階最適化で最高水準のPNG圧縮</dd>
               <dt>📄 PDF</dt>
               <dd><strong>Ghostscript</strong> — 画像のダウンサンプリングとJPEG再圧縮でPDFを軽量化</dd>
+              <dt>🖼️ JPEG XL</dt>
+              <dd><strong>cjxl</strong>（libjxl）— JPEGの正式な後継規格。ロスレスJPEG変換で完全復元可能</dd>
+              <dt>🌟 AVIF</dt>
+              <dd><strong>avifenc</strong>（libavif）— AV1ベースの次世代画像フォーマット。Web利用可能な形式で最高の圧縮率</dd>
             </dl>
           </div>
           {results.map((r, i) => (

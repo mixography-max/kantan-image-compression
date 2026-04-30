@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { CompressionResult } from './utils';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import hamsterImg from './assets/hamster.png';
 
@@ -19,6 +20,10 @@ interface Settings {
   maxHeight: number;
   convertWebp: boolean;
   targetSizeKb: number;
+  convertJxl: boolean;
+  jxlLossless: boolean;
+  convertAvif: boolean;
+  autoQuality: boolean;
 }
 
 interface Props {
@@ -43,7 +48,9 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
   const [processing, setProcessing] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [autoQualityLogs, setAutoQualityLogs] = useState<string[]>([]);
   const unlistenRef = useRef<(() => void) | null>(null);
+  const autoQualityLogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +96,24 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
     console.log('Received file paths:', paths);
     setProcessing(true);
     setStatusText(`圧縮中… ${paths.length}件`);
+    setAutoQualityLogs([]);
+
+    // Listen for auto-quality progress events
+    let unlistenAQ: (() => void) | null = null;
+    if (settings.autoQuality) {
+      unlistenAQ = await listen<string>('auto-quality-log', (event) => {
+        setAutoQualityLogs(prev => {
+          const next = [...prev, event.payload];
+          setTimeout(() => {
+            if (autoQualityLogRef.current) {
+              autoQualityLogRef.current.scrollTop = autoQualityLogRef.current.scrollHeight;
+            }
+          }, 0);
+          return next;
+        });
+      });
+    }
+
     try {
       const rustResults = await invoke<RustCompressResult[]>('compress', {
         inputs: paths,
@@ -104,6 +129,10 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
           maxHeight: settings.maxWidth, // Use maxWidth for both (longest edge)
           convertWebp: settings.convertWebp,
           targetSizeKb: settings.targetSizeKb,
+          convertJxl: settings.convertJxl,
+          jxlLossless: settings.jxlLossless,
+          convertAvif: settings.convertAvif,
+          autoQuality: settings.autoQuality,
           outputDir: outputDir || undefined,
         },
       });
@@ -145,6 +174,7 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
       setStatusText(`❌ エラー: ${e}`);
     } finally {
       setProcessing(false);
+      if (unlistenAQ) unlistenAQ();
     }
   };
 
@@ -192,6 +222,14 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
       {!processing && statusText && (
         <div className="processing-indicator" style={{ borderColor: 'rgba(100, 255, 218, 0.3)' }}>
           <span>{statusText}</span>
+        </div>
+      )}
+      {autoQualityLogs.length > 0 && (
+        <div className="auto-quality-log" ref={autoQualityLogRef}>
+          <div className="auto-quality-log-header">🤖 おまかせ機能ログ</div>
+          {autoQualityLogs.map((log, i) => (
+            <div key={i} className="auto-quality-log-line">{log}</div>
+          ))}
         </div>
       )}
     </>

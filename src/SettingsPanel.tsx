@@ -15,6 +15,10 @@ interface Settings {
   maxHeight: number;
   convertWebp: boolean;
   targetSizeKb: number;
+  convertJxl: boolean;
+  jxlLossless: boolean;
+  convertAvif: boolean;
+  autoQuality: boolean;
 }
 
 interface Props {
@@ -42,7 +46,19 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
     } else {
       newVal = Number(value);
     }
-    onChange({ ...settings, [name]: newVal } as any);
+    let updated = { ...settings, [name]: newVal } as Settings;
+    // Exclusive toggle: WebP, JXL, and AVIF cannot be enabled at the same time
+    if (name === 'convertJxl' && newVal === true) {
+      updated.convertWebp = false;
+      updated.convertAvif = false;
+    } else if (name === 'convertWebp' && newVal === true) {
+      updated.convertJxl = false;
+      updated.convertAvif = false;
+    } else if (name === 'convertAvif' && newVal === true) {
+      updated.convertWebp = false;
+      updated.convertJxl = false;
+    }
+    onChange(updated);
   };
 
   const handlePreset = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -89,10 +105,27 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
         </div>
       </div>
 
+      <div className="setting-item auto-quality-setting">
+        <label className="auto-quality-label">
+          <input
+            type="checkbox"
+            name="autoQuality"
+            checked={settings.autoQuality}
+            onChange={handleChange}
+          />
+          🤖 おまかせ機能（SSIM自動品質）
+        </label>
+        {settings.autoQuality && (
+          <p className="auto-quality-desc">
+            SSIM ≥ 0.95 を満たす最小サイズを自動探索します。JPEG（品質）・PNG（色数）が対象です。
+          </p>
+        )}
+      </div>
+
       <div className="setting-group">
         <label className="setting-group-title">📸 JPEG 設定</label>
         <div className="setting-item">
-          <label>品質</label>
+          <label>品質 {settings.autoQuality && <span className="auto-badge">おまかせ</span>}</label>
           <input
             type="range"
             name="jpegQuality"
@@ -100,8 +133,9 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
             max={100}
             value={settings.jpegQuality}
             onChange={handleChange}
+            disabled={settings.autoQuality}
           />
-          <span>{settings.jpegQuality}%</span>
+          <span>{settings.autoQuality ? '自動' : `${settings.jpegQuality}%`}</span>
         </div>
         <div className="setting-item">
           <label>
@@ -117,7 +151,7 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
       </div>
 
       <div className="setting-item">
-        <label>🎨 PNG 色数</label>
+        <label>🎨 PNG 色数 {settings.autoQuality && <span className="auto-badge">おまかせ</span>}</label>
         <input
           type="number"
           name="pngColors"
@@ -125,6 +159,7 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
           max={256}
           value={settings.pngColors}
           onChange={handleChange}
+          disabled={settings.autoQuality}
         />
       </div>
 
@@ -211,7 +246,42 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
               checked={settings.convertWebp}
               onChange={handleChange}
             />
-            🌐 WebP に変換（JPEG/PNG → WebP）
+            ⛳ WebP に変換（JPEG/PNG → WebP）
+          </label>
+        </div>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              name="convertJxl"
+              checked={settings.convertJxl}
+              onChange={handleChange}
+            />
+            🖼️ JPEG XL に変換（JPEG/PNG → JXL）
+          </label>
+          {settings.convertJxl && (
+            <div className="setting-sub-item">
+              <label>
+                <input
+                  type="checkbox"
+                  name="jxlLossless"
+                  checked={settings.jxlLossless}
+                  onChange={handleChange}
+                />
+                ロスレス変換（JPEG→JXL 限定、完全復元可能）
+              </label>
+            </div>
+          )}
+        </div>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              name="convertAvif"
+              checked={settings.convertAvif}
+              onChange={handleChange}
+            />
+            🌟 AVIF に変換（JPEG/PNG → AVIF）
           </label>
         </div>
         <div className="setting-item">
