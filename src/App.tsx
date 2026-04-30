@@ -3,12 +3,14 @@ import React, { useState, useEffect } from 'react';
 import DropZone from './DropZone';
 import SettingsPanel from './SettingsPanel';
 import ResultCard from './ResultCard';
+import HistoryPanel from './HistoryPanel';
 import { CompressionResult } from './utils';
 import { invoke } from '@tauri-apps/api/core';
 
 const App: React.FC = () => {
   const [results, setResults] = useState<CompressionResult[]>([]);
   const [outputDir, setOutputDir] = useState('');
+  const [historyRefresh, setHistoryRefresh] = useState(0);
   const [settings, setSettings] = useState({
     jpegQuality: 85,
     pngColors: 256,
@@ -31,6 +33,7 @@ const App: React.FC = () => {
 
   const handleCompression = (newResults: CompressionResult[]) => {
     setResults(prev => [...newResults, ...prev]);
+    setHistoryRefresh(prev => prev + 1); // trigger history reload
   };
 
   const handleSettingsChange = (newSettings: typeof settings) => {
@@ -66,6 +69,7 @@ const App: React.FC = () => {
           {results.map((r, i) => (
             <ResultCard key={i} result={r} />
           ))}
+          <HistoryPanel refreshTrigger={historyRefresh} />
         </div>
         <div className="right">
           <SettingsPanel

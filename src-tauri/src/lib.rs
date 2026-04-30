@@ -834,7 +834,25 @@ fn compress(inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResu
         }
     });
 
-    results.into_inner().unwrap()
+    let final_results = results.into_inner().unwrap();
+
+    // Save successful results to history
+    let history_entries: Vec<HistoryEntry> = final_results.iter()
+        .filter(|r| !r.is_error)
+        .map(|r| HistoryEntry {
+            filename: r.filename.clone(),
+            original_size: r.original_size,
+            compressed_size: r.compressed_size,
+            reduction: r.reduction,
+            output_path: r.output_path.clone(),
+            timestamp: chrono_now(),
+        })
+        .collect();
+    if !history_entries.is_empty() {
+        append_history(&history_entries);
+    }
+
+    final_results
 }
 
 #[tauri::command]
@@ -854,6 +872,98 @@ fn set_output_dir(path: String) {
 }
 
 // ---------------------------------------------------------------------------
+// Compression history
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryEntry {
+    filename: String,
+    original_size: u64,
+    compressed_size: u64,
+    reduction: f64,
+    output_path: String,
+    timestamp: String,
+}
+
+fn history_path() -> PathBuf {
+    let dir = config_path().parent().unwrap_or(Path::new("/tmp")).to_path_buf();
+    let _ = fs::create_dir_all(&dir);
+    dir.join("history.json")
+}
+
+fn load_history() -> Vec<HistoryEntry> {
+    let path = history_path();
+    if let Ok(data) = fs::read_to_string(&path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+fn save_history(history: &[HistoryEntry]) {
+    let path = history_path();
+    if let Ok(json) = serde_json::to_string_pretty(history) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+fn append_history(entries: &[HistoryEntry]) {
+    let mut history = load_history();
+    history.extend_from_slice(entries);
+    save_history(&history);
+}
+
+#[tauri::command]
+fn get_history() -> Vec<HistoryEntry> {
+    load_history()
+}
+
+#[tauri::command]
+fn clear_history() {
+    save_history(&[]);
+}
+
+#[tauri::command]
+fn delete_history_entries(indices: Vec<usize>) -> Vec<HistoryEntry> {
+    let mut history = load_history();
+    // Sort indices in reverse to remove from end first
+    let mut sorted = indices;
+    sorted.sort_unstable();
+    sorted.dedup();
+    for &i in sorted.iter().rev() {
+        if i < history.len() {
+            history.remove(i);
+        }
+    }
+    save_history(&history);
+    history
+}
+
+#[tauri::command]
+fn export_history_csv() -> Result<String, String> {
+    let history = load_history();
+    let out_dir = default_output_dir();
+    let _ = fs::create_dir_all(&out_dir);
+    let csv_path = out_dir.join("compression_history.csv");
+
+    let mut csv = String::from("日時,ファイル名,元サイズ(bytes),圧縮後サイズ(bytes),削減率(%),出力パス\n");
+    for entry in &history {
+        csv.push_str(&format!(
+            "{},{},{},{},{:.1},{}\n",
+            entry.timestamp,
+            entry.filename.replace(',', "_"),
+            entry.original_size,
+            entry.compressed_size,
+            entry.reduction,
+            entry.output_path.replace(',', "_"),
+        ));
+    }
+    fs::write(&csv_path, &csv).map_err(|e| format!("CSV書き出し失敗: {}", e))?;
+    Ok(csv_path.to_string_lossy().to_string())
+}
+
+// ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
 
@@ -862,7 +972,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![compress, get_output_dir, set_output_dir])
+        .invoke_handler(tauri::generate_handler![
+            compress,
+            get_output_dir,
+            set_output_dir,
+            get_history,
+            clear_history,
+            delete_history_entries,
+            export_history_csv,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
