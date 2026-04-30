@@ -1,9 +1,10 @@
 [package]
 name = "kan_tan_image_compression_kun"
-version = "1.4.0"
-description = "A Tauri App"
+version = "1.4.1"
+description = "🐹 はむはむ画像圧縮くん — 高品質画像・PDF圧縮ツール"
 authors = ["you"]
 edition = "2021"
+default-run = "kan_tan_image_compression_kun"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +14,10 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "kan_tan_image_compression_kun_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "hamham-compress"
+path = "src/cli.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -27,4 +32,5 @@ tempfile = "3"
 rayon = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 oxipng = { version = "9", default-features = false, features = ["parallel"] }
+clap = { version = "4", features = ["derive"] }
 
