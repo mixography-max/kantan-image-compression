@@ -384,35 +384,58 @@ pub fn auto_quality_jpeg(
     Ok(best_q)
 }
 
-/// Auto-quality search for PNG using binary search over color count.
-/// Uses composite evaluation: SSIM + CIEDE2000 ΔE.
-/// Target: SSIM ≥ 0.98 AND avg ΔE ≤ 1.5 AND max ΔE ≤ 5.0
+/// Check if an image is purely grayscale (R == G == B across sampled pixels).
+fn is_grayscale_image(img: &RgbaImage) -> bool {
+    let raw = img.as_raw();
+    let total_pixels = raw.len() / 4;
+    let step = (total_pixels / 5000).max(1);
+    for i in (0..total_pixels).step_by(step) {
+        let idx = i * 4;
+        if raw[idx] != raw[idx + 1] || raw[idx + 1] != raw[idx + 2] {
+            return false;
+        }
+    }
+    true
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct PaletteCandidate {
+    colors: u32,
+    ssim: f64,
+    avg_de: f64,
+    max_de: f64,
+    size_bytes: u64,
+    passed: bool,
+}
+
+/// Auto-quality search for PNG using hierarchical bit-depth palette search + Pareto-optimal selection.
+/// Evaluates discrete bit-depth keypoints: [256, 128, 64, 32, 16, 8, 4, 2]
+/// Target: SSIM >= 0.980 AND avg ΔE <= 1.5 AND max ΔE <= 30.0
 pub fn auto_quality_png(
     src: &Path,
     dst: &Path,
     logger: &dyn Logger,
     filename: &str,
 ) -> Result<u32, String> {
-    let target_ssim: f64 = 0.98;
-    let target_avg_de: f64 = 1.5;
-    let target_max_de: f64 = 5.0;
-    let mut lo: u32 = 32;
-    let mut hi: u32 = 256;
-    let mut best_c: u32 = 256;
-    let mut iteration = 0;
-
     // Pre-load original image once (A-2 optimization)
     let orig_img = image::open(src)
         .map_err(|e| format!("元画像の読み込み失敗: {}", e))?;
     let orig_gray = orig_img.to_luma8();
     let orig_rgba = orig_img.to_rgba8();
 
+    let is_gray = is_grayscale_image(&orig_rgba);
+    let target_ssim: f64 = if is_gray { 0.980 } else { 0.985 };
+    let target_avg_de: f64 = if is_gray { 2.0 } else { 1.5 };
+    let target_max_de: f64 = 30.0; // Avoid gross artifacts while allowing edge anti-aliasing
+
+    let mode_str = if is_gray { " [モノクロ図版]" } else { "" };
     logger.log(&format!(
-        "🔍 {} — PNG自動色数探索開始 (目標: SSIM≥{:.2}, ΔE avg≤{:.1}, max≤{:.1})",
-        filename, target_ssim, target_avg_de, target_max_de
+        "🔍 {}{} — PNG階層的パレット探索開始 (目標: SSIM≥{:.3}, ΔE avg≤{:.1})",
+        filename, mode_str, target_ssim, target_avg_de
     ));
 
-    // Temporary file for search iterations (skips oxipng/ect and disk thrashing on dst)
+    // Temporary candidate file for rapid evaluations (skips oxipng/ect and disk thrashing on dst)
     let temp_candidate = tempfile::Builder::new()
         .prefix("aq_candidate_")
         .suffix(".png")
@@ -421,14 +444,14 @@ pub fn auto_quality_png(
         .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
     let temp_path = temp_candidate.path();
 
-    while lo <= hi {
-        let mid = (lo + hi) / 2;
-        iteration += 1;
+    // Discrete bit-depth palette candidates covering 8-bit, 4-bit, 2-bit, and 1-bit PNG
+    let candidates: &[u32] = &[256, 128, 64, 32, 16, 8, 4, 2];
+    let mut evals: Vec<PaletteCandidate> = Vec::with_capacity(candidates.len());
 
-        // Rapid quantize-only for search iterations (avoids oxipng and ect -9)
-        compress_png_quant_only(src, temp_path, mid)?;
+    for (step, &c) in candidates.iter().enumerate() {
+        // Fast quantization only (no oxipng, no ect)
+        compress_png_quant_only(src, temp_path, c)?;
 
-        // Load compressed candidate once, compute both metrics (A-2 optimization)
         let comp_img = image::open(temp_path)
             .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?;
         let comp_gray = comp_img.to_luma8();
@@ -436,26 +459,59 @@ pub fn auto_quality_png(
 
         let ssim = ssim_from_images(&orig_gray, &comp_gray);
         let (avg_de, max_de) = delta_e_from_images(&orig_rgba, &comp_rgba);
-        let size = fs::metadata(temp_path).map(|m| m.len()).unwrap_or(0);
-        let size_kb = size as f64 / 1024.0;
+        let size_bytes = fs::metadata(temp_path).map(|m| m.len()).unwrap_or(0);
+        let size_kb = size_bytes as f64 / 1024.0;
 
-        let passes_all = ssim >= target_ssim && avg_de <= target_avg_de && max_de <= target_max_de;
+        let passed = ssim >= target_ssim && avg_de <= target_avg_de && max_de <= target_max_de;
+        let status = if passed { "✅" } else { "⚠️" };
 
-        let status = if passes_all { "✅" } else { "⚠️" };
         logger.log(&format!(
-            "  #{} 色数={:3} → SSIM={:.4} ΔE(avg={:.2}, max={:.1}) {} ({:.0}KB)",
-            iteration, mid, ssim, avg_de, max_de, status, size_kb
+            "  #{}/{} 色数={:3} → SSIM={:.4} ΔE(avg={:.2}, max={:.1}) {} ({:.0}KB)",
+            step + 1, candidates.len(), c, ssim, avg_de, max_de, status, size_kb
         ));
 
-        if passes_all {
-            best_c = mid;
-            hi = mid.saturating_sub(1);
-        } else {
-            lo = mid + 1;
-        }
-
-        if lo > hi { break; }
+        evals.push(PaletteCandidate {
+            colors: c,
+            ssim,
+            avg_de,
+            max_de,
+            size_bytes,
+            passed,
+        });
     }
+
+    // Pareto-optimal selection:
+    // 1. Filter candidates that passed the quality thresholds.
+    // 2. Find the minimum file size among passed candidates.
+    // 3. For candidates within 5% of the minimum file size ("equivalent compression"), prefer higher SSIM.
+    // 4. Otherwise, aggressively adopt the lower color count that significantly cuts file size!
+    let passed_evals: Vec<&PaletteCandidate> = evals.iter().filter(|e| e.passed).collect();
+
+    let best_c = if let Some(min_size_cand) = passed_evals.iter().min_by_key(|e| e.size_bytes) {
+        let min_size = min_size_cand.size_bytes;
+        let size_threshold = (min_size as f64 * 1.05) as u64; // within 5% of minimum size
+
+        let near_min = passed_evals
+            .iter()
+            .copied()
+            .filter(|e| e.size_bytes <= size_threshold);
+
+        // Among near-minimum sizes, pick the highest SSIM (or lowest colors if SSIM is identical)
+        let best_cand = near_min
+            .max_by(|a, b| {
+                a.ssim.partial_cmp(&b.ssim).unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.colors.cmp(&a.colors)) // tie-break: lower color count
+            })
+            .unwrap_or(min_size_cand);
+
+        best_cand.colors
+    } else {
+        // Fallback if no candidate strictly passed: choose candidate with highest SSIM
+        evals.iter()
+            .max_by(|a, b| a.ssim.partial_cmp(&b.ssim).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|e| e.colors)
+            .unwrap_or(256)
+    };
 
     // Final compress at best color count (runs full optimization: pngquant + oxipng + ect)
     compress_png(src, dst, best_c)?;

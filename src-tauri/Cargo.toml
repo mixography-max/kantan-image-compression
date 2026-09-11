@@ -1,6 +1,6 @@
 [package]
 name = "kan_tan_image_compression_kun"
-version = "1.4.3"
+version = "1.4.4"
 description = "🐹 はむはむ画像圧縮くん — 高品質画像・PDF圧縮ツール"
 authors = ["you"]
 edition = "2021"
