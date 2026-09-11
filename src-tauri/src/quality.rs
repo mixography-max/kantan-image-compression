@@ -3,7 +3,7 @@ use std::path::Path;
 use image::{GrayImage, RgbaImage};
 
 use crate::Logger;
-use crate::compress::{compress_jpeg, compress_png};
+use crate::compress::{compress_jpeg, compress_png, compress_png_quant_only};
 
 // ---------------------------------------------------------------------------
 // SSIM calculation (luminance-based structural similarity)
@@ -149,10 +149,10 @@ fn ciede2000(l1: f64, a1: f64, b1: f64, l2: f64, a2: f64, b2: f64) -> f64 {
 
     let c1_ab = (a1 * a1 + b1 * b1).sqrt();
     let c2_ab = (a2 * a2 + b2 * b2).sqrt();
-    let c_ab_mean = (c1_ab + c2_ab) / 2.0;
+    let c_bar = (c1_ab + c2_ab) / 2.0;
 
-    let c_ab_mean_pow7 = c_ab_mean.powi(7);
-    let g = 0.5 * (1.0 - (c_ab_mean_pow7 / (c_ab_mean_pow7 + 25.0_f64.powi(7))).sqrt());
+    let c_bar7 = c_bar.powi(7);
+    let g = 0.5 * (1.0 - (c_bar7 / (c_bar7 + 25.0_f64.powi(7))).sqrt());
 
     let a1_prime = a1 * (1.0 + g);
     let a2_prime = a2 * (1.0 + g);
@@ -160,15 +160,24 @@ fn ciede2000(l1: f64, a1: f64, b1: f64, l2: f64, a2: f64, b2: f64) -> f64 {
     let c1_prime = (a1_prime * a1_prime + b1 * b1).sqrt();
     let c2_prime = (a2_prime * a2_prime + b2 * b2).sqrt();
 
-    let h1_prime = b1.atan2(a1_prime).to_degrees();
-    let h1_prime = if h1_prime < 0.0 { h1_prime + 360.0 } else { h1_prime };
-    let h2_prime = b2.atan2(a2_prime).to_degrees();
-    let h2_prime = if h2_prime < 0.0 { h2_prime + 360.0 } else { h2_prime };
+    let h1_prime = if a1_prime == 0.0 && b1 == 0.0 {
+        0.0
+    } else {
+        let deg = b1.atan2(a1_prime) * 180.0 / PI;
+        if deg < 0.0 { deg + 360.0 } else { deg }
+    };
+
+    let h2_prime = if a2_prime == 0.0 && b2 == 0.0 {
+        0.0
+    } else {
+        let deg = b2.atan2(a2_prime) * 180.0 / PI;
+        if deg < 0.0 { deg + 360.0 } else { deg }
+    };
 
     let dl_prime = l2 - l1;
     let dc_prime = c2_prime - c1_prime;
 
-    let dh_prime_raw = if c1_prime * c2_prime == 0.0 {
+    let dh_prime_val = if c1_prime * c2_prime == 0.0 {
         0.0
     } else if (h2_prime - h1_prime).abs() <= 180.0 {
         h2_prime - h1_prime
@@ -177,7 +186,7 @@ fn ciede2000(l1: f64, a1: f64, b1: f64, l2: f64, a2: f64, b2: f64) -> f64 {
     } else {
         h2_prime - h1_prime + 360.0
     };
-    let dh_prime = 2.0 * (c1_prime * c2_prime).sqrt() * (dh_prime_raw / 2.0 * PI / 180.0).sin();
+    let dh_prime = 2.0 * (c1_prime * c2_prime).sqrt() * (dh_prime_val * PI / 360.0).sin();
 
     let l_prime_mean = (l1 + l2) / 2.0;
     let c_prime_mean = (c1_prime + c2_prime) / 2.0;
@@ -232,15 +241,31 @@ fn delta_e_from_images(img_a: &RgbaImage, img_b: &RgbaImage) -> (f64, f64) {
     let pixels_b = img_b_ref.as_raw();
     let total_pixels = (w_a * h_a) as usize;
 
-    const SAMPLE_STEP: usize = 4;
+    // Dynamically sample up to ~40,000 points across the image to avoid CPU exhaustion on large images
+    let sample_step = (total_pixels / 40_000).max(1);
     let mut sum_de = 0.0f64;
     let mut max_de = 0.0f64;
     let mut count = 0u64;
 
-    for i in (0..total_pixels).step_by(SAMPLE_STEP) {
+    for i in (0..total_pixels).step_by(sample_step) {
         let idx = i * 4;
         if idx + 3 >= pixels_a.len() || idx + 3 >= pixels_b.len() {
             break;
+        }
+
+        // Skip fully transparent pixels in both images (invisible differences)
+        if pixels_a[idx + 3] == 0 && pixels_b[idx + 3] == 0 {
+            count += 1;
+            continue;
+        }
+
+        // Fast path: exact same RGB values have ΔE = 0.0
+        if pixels_a[idx] == pixels_b[idx]
+            && pixels_a[idx + 1] == pixels_b[idx + 1]
+            && pixels_a[idx + 2] == pixels_b[idx + 2]
+        {
+            count += 1;
+            continue;
         }
 
         let (l1, a1, b1) = srgb_to_lab(pixels_a[idx], pixels_a[idx + 1], pixels_a[idx + 2]);
@@ -301,19 +326,28 @@ pub fn auto_quality_jpeg(
         "🔍 {} — SSIM自動品質探索開始 (目標: SSIM ≥ {:.2})", filename, target_ssim
     ));
 
+    // Temporary file for search iterations (avoids disk thrashing on dst)
+    let temp_candidate = tempfile::Builder::new()
+        .prefix("aq_candidate_")
+        .suffix(".jpg")
+        .tempfile_in(dst.parent().unwrap_or_else(|| Path::new(".")))
+        .or_else(|_| tempfile::NamedTempFile::new())
+        .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+    let temp_path = temp_candidate.path();
+
     while lo <= hi {
         let mid = (lo + hi) / 2;
         iteration += 1;
 
-        compress_jpeg(src, dst, mid, progressive, strip_meta)?;
+        compress_jpeg(src, temp_path, mid, progressive, strip_meta)?;
 
-        // Load compressed image once per iteration
-        let comp_img = image::open(dst)
+        // Load compressed candidate once per iteration
+        let comp_img = image::open(temp_path)
             .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?;
         let comp_gray = comp_img.to_luma8();
         let ssim = ssim_from_images(&orig_gray, &comp_gray);
 
-        let size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+        let size = fs::metadata(temp_path).map(|m| m.len()).unwrap_or(0);
         let size_kb = size as f64 / 1024.0;
 
         let status = if ssim >= target_ssim { "✅" } else { "⚠️" };
@@ -332,11 +366,8 @@ pub fn auto_quality_jpeg(
         if lo > hi { break; }
     }
 
-    // Final compress at best quality (skip if last iteration already used best_q — A-8)
-    let needs_final = iteration == 0 || best_q != (lo + hi + 1) / 2;
-    if needs_final {
-        compress_jpeg(src, dst, best_q, progressive, strip_meta)?;
-    }
+    // Final compress at best quality directly to destination
+    compress_jpeg(src, dst, best_q, progressive, strip_meta)?;
     let final_ssim = {
         let comp = image::open(dst)
             .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?
@@ -381,21 +412,31 @@ pub fn auto_quality_png(
         filename, target_ssim, target_avg_de, target_max_de
     ));
 
+    // Temporary file for search iterations (skips oxipng/ect and disk thrashing on dst)
+    let temp_candidate = tempfile::Builder::new()
+        .prefix("aq_candidate_")
+        .suffix(".png")
+        .tempfile_in(dst.parent().unwrap_or_else(|| Path::new(".")))
+        .or_else(|_| tempfile::NamedTempFile::new())
+        .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+    let temp_path = temp_candidate.path();
+
     while lo <= hi {
         let mid = (lo + hi) / 2;
         iteration += 1;
 
-        compress_png(src, dst, mid)?;
+        // Rapid quantize-only for search iterations (avoids oxipng and ect -9)
+        compress_png_quant_only(src, temp_path, mid)?;
 
-        // Load compressed image once, compute both metrics (A-2 optimization)
-        let comp_img = image::open(dst)
+        // Load compressed candidate once, compute both metrics (A-2 optimization)
+        let comp_img = image::open(temp_path)
             .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?;
         let comp_gray = comp_img.to_luma8();
         let comp_rgba = comp_img.to_rgba8();
 
         let ssim = ssim_from_images(&orig_gray, &comp_gray);
         let (avg_de, max_de) = delta_e_from_images(&orig_rgba, &comp_rgba);
-        let size = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+        let size = fs::metadata(temp_path).map(|m| m.len()).unwrap_or(0);
         let size_kb = size as f64 / 1024.0;
 
         let passes_all = ssim >= target_ssim && avg_de <= target_avg_de && max_de <= target_max_de;
@@ -416,7 +457,7 @@ pub fn auto_quality_png(
         if lo > hi { break; }
     }
 
-    // Final compress at best color count
+    // Final compress at best color count (runs full optimization: pngquant + oxipng + ect)
     compress_png(src, dst, best_c)?;
     let comp_img = image::open(dst)
         .map_err(|e| format!("圧縮画像の読み込み失敗: {}", e))?;
@@ -430,4 +471,52 @@ pub fn auto_quality_png(
     ));
 
     Ok(best_c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    struct TestLogger;
+    impl Logger for TestLogger {
+        fn log(&self, msg: &str) {
+            println!("{}", msg);
+        }
+    }
+
+    #[test]
+    fn test_identical_images_have_perfect_metrics() {
+        let mut img = RgbaImage::new(64, 64);
+        for pixel in img.pixels_mut() {
+            *pixel = Rgba([120, 80, 200, 255]);
+        }
+        let gray = image::DynamicImage::ImageRgba8(img.clone()).to_luma8();
+        let ssim = ssim_from_images(&gray, &gray);
+        assert!((ssim - 1.0).abs() < 1e-6);
+
+        let (avg_de, max_de) = delta_e_from_images(&img, &img);
+        assert_eq!(avg_de, 0.0);
+        assert_eq!(max_de, 0.0);
+    }
+
+    #[test]
+    fn test_auto_quality_png_execution() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let src_path = temp_dir.path().join("test_src.png");
+        let dst_path = temp_dir.path().join("test_dst.png");
+
+        // Create a 128x128 test image
+        let mut img = RgbaImage::new(128, 128);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            *pixel = Rgba([(x * 2) as u8, (y * 2) as u8, 128, 255]);
+        }
+        img.save(&src_path).unwrap();
+
+        let logger = TestLogger;
+        let result = auto_quality_png(&src_path, &dst_path, &logger, "test.png");
+        assert!(result.is_ok());
+        assert!(dst_path.exists());
+        assert!(fs::metadata(&dst_path).unwrap().len() > 0);
+    }
 }

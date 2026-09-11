@@ -130,6 +130,38 @@ pub fn compress_png(src: &Path, dst: &Path, colors: u32) -> Result<(), String> {
     }
 }
 
+/// Quantize PNG with pngquant only (skipping oxipng and ect) for rapid quality evaluation in search loops.
+pub fn compress_png_quant_only(src: &Path, dst: &Path, colors: u32) -> Result<(), String> {
+    let pngquant = resolve_tool("pngquant");
+    let src_s = path_str(src)?;
+    let dst_s = path_str(dst)?;
+
+    if tool_exists(&pngquant) {
+        let pq_result = run_tool(&pngquant, &[
+            "--force", "--quality=60-95",
+            &colors.to_string(),
+            "--output", dst_s,
+            "--", src_s,
+        ]);
+
+        if pq_result.is_err() {
+            let retry = run_tool(&pngquant, &[
+                "--force", "--quality=0-100",
+                &colors.to_string(),
+                "--output", dst_s,
+                "--", src_s,
+            ]);
+            if retry.is_err() {
+                fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;
+            }
+        }
+        Ok(())
+    } else {
+        fs::copy(src, dst).map_err(|e| format!("コピー失敗: {}", e))?;
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PDF compression
 // ---------------------------------------------------------------------------

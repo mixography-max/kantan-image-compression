@@ -257,9 +257,16 @@ pub fn compress_files(inputs: &[String], settings: &CompressSettings, logger: &d
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn compress(app: AppHandle, inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResult> {
-    let logger = TauriLogger { app };
-    compress_files(&inputs, &settings, &logger)
+async fn compress(app: AppHandle, inputs: Vec<String>, settings: CompressSettings) -> Vec<CompressResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let logger = TauriLogger { app };
+        compress_files(&inputs, &settings, &logger)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("Compression worker panicked: {:?}", e);
+        Vec::new()
+    })
 }
 
 #[tauri::command]

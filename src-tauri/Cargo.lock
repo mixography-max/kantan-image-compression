@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "kan_tan_image_compression_kun"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "clap",
  "image",
