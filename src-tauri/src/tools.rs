@@ -165,13 +165,11 @@ pub fn make_tool_command(exe: &str) -> Command {
                         for entry in entries.flatten() {
                             let p = entry.path();
                             if p.is_dir() {
-                                let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
                                 paths.push(p.to_string_lossy().to_string());
-                                if name == "Resource" || name == "lib" || name == "Init" {
-                                    // Don't recurse further into these
-                                } else {
-                                    collect_gs_paths(&p, paths);
-                                }
+                                // Recurse into all subdirectories so that
+                                // Resource/Init (gs_init.ps), Resource/Font,
+                                // etc. are all included in GS_LIB.
+                                collect_gs_paths(&p, paths);
                             }
                         }
                     }

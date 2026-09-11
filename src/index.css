@@ -453,6 +453,22 @@ header h1 {
   box-shadow: 0 2px 8px var(--accent-glow);
 }
 
+.output-dir-auto-open {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.output-dir-auto-open input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
 /* ── Setting Sub-item (nested option) ── */
 .setting-sub-item {
   margin-top: 0.4rem;

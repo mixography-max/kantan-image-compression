@@ -1,25 +1,7 @@
 // src/SettingsPanel.tsx
 import React from 'react';
+import { Settings } from './utils';
 import { open } from '@tauri-apps/plugin-dialog';
-
-interface Settings {
-  jpegQuality: number;
-  pngColors: number;
-  pdfDpi: number;
-  pdfJpegQ: number;
-  officeQuality: number;
-  group: boolean;
-  progressiveJpeg: boolean;
-  stripMetadata: boolean;
-  maxWidth: number;
-  maxHeight: number;
-  convertWebp: boolean;
-  targetSizeKb: number;
-  convertJxl: boolean;
-  jxlLossless: boolean;
-  convertAvif: boolean;
-  autoQuality: boolean;
-}
 
 interface Props {
   settings: Settings;
@@ -103,6 +85,15 @@ const SettingsPanel: React.FC<Props> = ({ settings, onChange, outputDir, onOutpu
           <span className="output-dir-path" title={outputDir}>{displayDir}</span>
           <button className="output-dir-btn" onClick={handlePickOutputDir}>変更</button>
         </div>
+        <label className="output-dir-auto-open">
+          <input
+            type="checkbox"
+            name="openFolderOnComplete"
+            checked={settings.openFolderOnComplete ?? true}
+            onChange={handleChange}
+          />
+          保存後に保存先フォルダを開く
+        </label>
       </div>
 
       <div className="setting-item auto-quality-setting">

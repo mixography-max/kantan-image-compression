@@ -156,8 +156,9 @@ pub fn compress_pdf(src: &Path, dst: &Path, dpi: u32, jpeg_q: u32) -> Result<(),
         .suffix(".pdf")
         .tempfile()
         .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
-    let tmp_path = tmp_out.path().to_string_lossy().to_string();
-    drop(tmp_out);
+    // Keep a TempPath handle so the file is not deleted until we're done.
+    let tmp_temp_path = tmp_out.into_temp_path();
+    let tmp_path = tmp_temp_path.to_string_lossy().to_string();
 
     let output_arg = format!("-sOutputFile={}", tmp_path);
     let result = run_tool(&gs, &[
@@ -217,10 +218,11 @@ pub fn compress_pdf_to_size(src: &Path, dst: &Path, target_kb: u64) -> Result<()
             .suffix(".pdf")
             .tempfile()
             .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
-        let tmp_path = tmp.path().to_path_buf();
-        drop(tmp);
+        let tmp_temp = tmp.into_temp_path();
+        let tmp_path = tmp_temp.to_path_buf();
 
         if compress_pdf(src, &tmp_path, *dpi, *jpeg_q).is_ok() {
+            let _ = tmp_temp.keep();
             let size = fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(u64::MAX);
             if size <= target_bytes {
                 if let Some(ref prev) = best_result {
@@ -234,8 +236,6 @@ pub fn compress_pdf_to_size(src: &Path, dst: &Path, target_kb: u64) -> Result<()
                 }
                 best_result = Some(tmp_path);
             }
-        } else {
-            let _ = fs::remove_file(&tmp_path);
         }
     }
 

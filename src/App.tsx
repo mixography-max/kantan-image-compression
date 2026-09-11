@@ -4,30 +4,44 @@ import DropZone from './DropZone';
 import SettingsPanel from './SettingsPanel';
 import ResultCard from './ResultCard';
 import HistoryPanel from './HistoryPanel';
-import { CompressionResult } from './utils';
+import { CompressionResult, Settings } from './utils';
 import { invoke } from '@tauri-apps/api/core';
+import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
+
+const SETTINGS_STORAGE_KEY = 'hamham_settings';
+
+const DEFAULT_SETTINGS: Settings = {
+  jpegQuality: 85,
+  pngColors: 256,
+  pdfDpi: 235,
+  pdfJpegQ: 82,
+  officeQuality: 80,
+  group: false,
+  progressiveJpeg: true,
+  stripMetadata: true,
+  maxWidth: 0,
+  maxHeight: 0,
+  convertWebp: false,
+  targetSizeKb: 0,
+  convertJxl: false,
+  jxlLossless: true,
+  convertAvif: false,
+  autoQuality: false,
+  openFolderOnComplete: true,
+};
 
 const App: React.FC = () => {
   const [results, setResults] = useState<CompressionResult[]>([]);
   const [outputDir, setOutputDir] = useState('');
   const [historyRefresh, setHistoryRefresh] = useState(0);
-  const [settings, setSettings] = useState({
-    jpegQuality: 85,
-    pngColors: 256,
-    pdfDpi: 235,
-    pdfJpegQ: 82,
-    officeQuality: 80,
-    group: false,
-    progressiveJpeg: true,
-    stripMetadata: true,
-    maxWidth: 0,
-    maxHeight: 0,
-    convertWebp: false,
-    targetSizeKb: 0,
-    convertJxl: false,
-    jxlLossless: true,
-    convertAvif: false,
-    autoQuality: false,
+  const [settings, setSettings] = useState<Settings>(() => {
+    try {
+      const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      if (saved) {
+        return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+      }
+    } catch {}
+    return DEFAULT_SETTINGS;
   });
 
   // Load saved output directory on mount
@@ -37,13 +51,36 @@ const App: React.FC = () => {
     }).catch(() => {});
   }, []);
 
-  const handleCompression = (newResults: CompressionResult[]) => {
+  const handleCompression = async (newResults: CompressionResult[]) => {
     setResults(prev => [...newResults, ...prev]);
     setHistoryRefresh(prev => prev + 1); // trigger history reload
+
+    // 保存が成功したら、保存先のフォルダを開く
+    if (settings.openFolderOnComplete !== false && newResults.length > 0) {
+      const validPaths = newResults.map(r => r.outputPath).filter(Boolean);
+      if (validPaths.length > 0) {
+        try {
+          await revealItemInDir(validPaths.length === 1 ? validPaths[0] : validPaths);
+        } catch {
+          try {
+            const first = validPaths[0];
+            const lastSep = Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\'));
+            if (lastSep > 0) {
+              await openPath(first.substring(0, lastSep));
+            }
+          } catch (e) {
+            console.error('Failed to open destination folder:', e);
+          }
+        }
+      }
+    }
   };
 
-  const handleSettingsChange = (newSettings: typeof settings) => {
+  const handleSettingsChange = (newSettings: Settings) => {
     setSettings(newSettings);
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(newSettings));
+    } catch {}
   };
 
   const handleOutputDirChange = (dir: string) => {
@@ -77,7 +114,7 @@ const App: React.FC = () => {
             </dl>
           </div>
           {results.map((r, i) => (
-            <ResultCard key={i} result={r} />
+            <ResultCard key={r.outputPath || i} result={r} />
           ))}
           <HistoryPanel refreshTrigger={historyRefresh} />
         </div>

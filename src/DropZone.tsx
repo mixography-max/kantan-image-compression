@@ -1,30 +1,11 @@
 // src/DropZone.tsx
 import React, { useState, useEffect, useRef } from 'react';
-import { CompressionResult } from './utils';
+import { CompressionResult, Settings } from './utils';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import hamsterImg from './assets/hamster.png';
-
-interface Settings {
-  jpegQuality: number;
-  pngColors: number;
-  pdfDpi: number;
-  pdfJpegQ: number;
-  officeQuality: number;
-  group: boolean;
-  progressiveJpeg: boolean;
-  stripMetadata: boolean;
-  maxWidth: number;
-  maxHeight: number;
-  convertWebp: boolean;
-  targetSizeKb: number;
-  convertJxl: boolean;
-  jxlLossless: boolean;
-  convertAvif: boolean;
-  autoQuality: boolean;
-}
 
 interface Props {
   settings: Settings;
@@ -51,6 +32,102 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
   const [autoQualityLogs, setAutoQualityLogs] = useState<string[]>([]);
   const unlistenRef = useRef<(() => void) | null>(null);
   const autoQualityLogRef = useRef<HTMLDivElement>(null);
+
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const outputDirRef = useRef(outputDir);
+  outputDirRef.current = outputDir;
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+
+  const handleFilePaths = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    const currentSettings = settingsRef.current;
+    const currentOutputDir = outputDirRef.current;
+    console.log('Received file paths:', paths);
+    setProcessing(true);
+    setStatusText(`圧縮中… ${paths.length}件`);
+    setAutoQualityLogs([]);
+
+    // Listen for auto-quality progress events
+    let unlistenAQ: (() => void) | null = null;
+    if (currentSettings.autoQuality) {
+      unlistenAQ = await listen<string>('auto-quality-log', (event) => {
+        setAutoQualityLogs(prev => {
+          const next = [...prev, event.payload];
+          setTimeout(() => {
+            if (autoQualityLogRef.current) {
+              autoQualityLogRef.current.scrollTop = autoQualityLogRef.current.scrollHeight;
+            }
+          }, 0);
+          return next;
+        });
+      });
+    }
+
+    try {
+      const rustResults = await invoke<RustCompressResult[]>('compress', {
+        inputs: paths,
+        settings: {
+          jpegQuality: currentSettings.jpegQuality,
+          pngColors: currentSettings.pngColors,
+          pdfDpi: currentSettings.pdfDpi,
+          pdfJpegQ: currentSettings.pdfJpegQ,
+          officeQuality: currentSettings.officeQuality,
+          stripMetadata: currentSettings.stripMetadata,
+          progressiveJpeg: currentSettings.progressiveJpeg,
+          maxWidth: currentSettings.maxWidth,
+          maxHeight: currentSettings.maxHeight,
+          convertWebp: currentSettings.convertWebp,
+          targetSizeKb: currentSettings.targetSizeKb,
+          convertJxl: currentSettings.convertJxl,
+          jxlLossless: currentSettings.jxlLossless,
+          convertAvif: currentSettings.convertAvif,
+          autoQuality: currentSettings.autoQuality,
+          outputDir: currentOutputDir || undefined,
+        },
+      });
+
+      console.log('Compression results:', rustResults);
+
+      const results: CompressionResult[] = rustResults
+        .filter(r => !r.isError)
+        .map(r => ({
+          filename: r.filename,
+          originalSize: r.originalSize,
+          compressedSize: r.compressedSize,
+          outputPath: r.outputPath,
+          reduction: r.reduction,
+        }));
+
+      // Report errors
+      const errors = rustResults.filter(r => r.isError);
+      for (const err of errors) {
+        console.error(`Compression error for ${err.filename}: ${err.errorMessage}`);
+      }
+
+      if (results.length > 0) {
+        onCompleteRef.current(results);
+      }
+
+      if (errors.length > 0 && results.length === 0) {
+        // All files errored
+        const firstErr = errors[0];
+        setStatusText(`❌ エラー: ${firstErr.filename}\n${firstErr.errorMessage || '不明なエラー'}`);
+      } else if (errors.length > 0) {
+        const errNames = errors.map(e => e.filename).join(', ');
+        setStatusText(`✅ ${results.length}件完了 / ❌ ${errors.length}件エラー (${errNames})\n${errors[0].errorMessage || ''}`);
+      } else {
+        setStatusText(`✅ ${rustResults.length}件完了`);
+      }
+    } catch (e) {
+      console.error('Compression error', e);
+      setStatusText(`❌ エラー: ${e}`);
+    } finally {
+      setProcessing(false);
+      if (unlistenAQ) unlistenAQ();
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -89,94 +166,7 @@ const DropZone: React.FC<Props> = ({ settings, outputDir, onComplete }) => {
         unlistenRef.current();
       }
     };
-  }, [settings, outputDir]);
-
-  const handleFilePaths = async (paths: string[]) => {
-    if (paths.length === 0) return;
-    console.log('Received file paths:', paths);
-    setProcessing(true);
-    setStatusText(`圧縮中… ${paths.length}件`);
-    setAutoQualityLogs([]);
-
-    // Listen for auto-quality progress events
-    let unlistenAQ: (() => void) | null = null;
-    if (settings.autoQuality) {
-      unlistenAQ = await listen<string>('auto-quality-log', (event) => {
-        setAutoQualityLogs(prev => {
-          const next = [...prev, event.payload];
-          setTimeout(() => {
-            if (autoQualityLogRef.current) {
-              autoQualityLogRef.current.scrollTop = autoQualityLogRef.current.scrollHeight;
-            }
-          }, 0);
-          return next;
-        });
-      });
-    }
-
-    try {
-      const rustResults = await invoke<RustCompressResult[]>('compress', {
-        inputs: paths,
-        settings: {
-          jpegQuality: settings.jpegQuality,
-          pngColors: settings.pngColors,
-          pdfDpi: settings.pdfDpi,
-          pdfJpegQ: settings.pdfJpegQ,
-          officeQuality: settings.officeQuality,
-          stripMetadata: settings.stripMetadata,
-          progressiveJpeg: settings.progressiveJpeg,
-          maxWidth: settings.maxWidth,
-          maxHeight: settings.maxWidth, // Use maxWidth for both (longest edge)
-          convertWebp: settings.convertWebp,
-          targetSizeKb: settings.targetSizeKb,
-          convertJxl: settings.convertJxl,
-          jxlLossless: settings.jxlLossless,
-          convertAvif: settings.convertAvif,
-          autoQuality: settings.autoQuality,
-          outputDir: outputDir || undefined,
-        },
-      });
-
-      console.log('Compression results:', rustResults);
-
-      const results: CompressionResult[] = rustResults
-        .filter(r => !r.isError)
-        .map(r => ({
-          filename: r.filename,
-          originalSize: r.originalSize,
-          compressedSize: r.compressedSize,
-          outputPath: r.outputPath,
-          reduction: r.reduction,
-        }));
-
-      // Report errors
-      const errors = rustResults.filter(r => r.isError);
-      for (const err of errors) {
-        console.error(`Compression error for ${err.filename}: ${err.errorMessage}`);
-      }
-
-      if (results.length > 0) {
-        onComplete(results);
-      }
-
-      if (errors.length > 0 && results.length === 0) {
-        // All files errored
-        const firstErr = errors[0];
-        setStatusText(`❌ エラー: ${firstErr.filename}\n${firstErr.errorMessage || '不明なエラー'}`);
-      } else if (errors.length > 0) {
-        const errNames = errors.map(e => e.filename).join(', ');
-        setStatusText(`✅ ${results.length}件完了 / ❌ ${errors.length}件エラー (${errNames})\n${errors[0].errorMessage || ''}`);
-      } else {
-        setStatusText(`✅ ${rustResults.length}件完了`);
-      }
-    } catch (e) {
-      console.error('Compression error', e);
-      setStatusText(`❌ エラー: ${e}`);
-    } finally {
-      setProcessing(false);
-      if (unlistenAQ) unlistenAQ();
-    }
-  };
+  }, []);
 
   const handleClick = async () => {
     try {

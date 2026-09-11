@@ -113,7 +113,7 @@ pub fn compress_files(inputs: &[String], settings: &CompressSettings, logger: &d
             .unwrap_or_default();
 
         if !SUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
-            results.lock().unwrap().push(CompressResult {
+            results.lock().unwrap_or_else(|e| e.into_inner()).push(CompressResult {
                 filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                 output_filename: String::new(),
                 output_path: String::new(),
@@ -196,7 +196,7 @@ pub fn compress_files(inputs: &[String], settings: &CompressSettings, logger: &d
                 } else {
                     0.0
                 };
-                results.lock().unwrap().push(CompressResult {
+                results.lock().unwrap_or_else(|e| e.into_inner()).push(CompressResult {
                     filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                     output_filename: out_name,
                     output_path: dst.to_string_lossy().to_string(),
@@ -217,7 +217,7 @@ pub fn compress_files(inputs: &[String], settings: &CompressSettings, logger: &d
                 ));
                 let _ = fs::write(&report_path, &report);
 
-                results.lock().unwrap().push(CompressResult {
+                results.lock().unwrap_or_else(|e| e.into_inner()).push(CompressResult {
                     filename: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
                     output_filename: String::new(),
                     output_path: String::new(),
@@ -231,7 +231,7 @@ pub fn compress_files(inputs: &[String], settings: &CompressSettings, logger: &d
         }
     });
 
-    let final_results = results.into_inner().unwrap();
+    let final_results = results.into_inner().unwrap_or_else(|e| e.into_inner());
 
     // Save successful results to history
     let history_entries: Vec<config::HistoryEntry> = final_results.iter()
@@ -303,6 +303,18 @@ fn delete_history_entries(indices: Vec<usize>) -> Vec<config::HistoryEntry> {
     history
 }
 
+fn escape_csv_field(s: &str) -> String {
+    let mut val = s.to_string();
+    if val.starts_with('=') || val.starts_with('+') || val.starts_with('-') || val.starts_with('@') {
+        val = format!("'\t{}", val);
+    }
+    if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {
+        format!("\"{}\"", val.replace('"', "\"\""))
+    } else {
+        val
+    }
+}
+
 #[tauri::command]
 fn export_history_csv() -> Result<String, String> {
     let history = config::load_history();
@@ -314,12 +326,12 @@ fn export_history_csv() -> Result<String, String> {
     for entry in &history {
         csv.push_str(&format!(
             "{},{},{},{},{:.1},{}\n",
-            entry.timestamp,
-            entry.filename.replace(',', "_"),
+            escape_csv_field(&entry.timestamp),
+            escape_csv_field(&entry.filename),
             entry.original_size,
             entry.compressed_size,
             entry.reduction,
-            entry.output_path.replace(',', "_"),
+            escape_csv_field(&entry.output_path),
         ));
     }
     fs::write(&csv_path, &csv).map_err(|e| format!("CSV書き出し失敗: {}", e))?;

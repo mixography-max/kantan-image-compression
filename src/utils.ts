@@ -7,6 +7,26 @@ export interface CompressionResult {
   reduction?: number; // percentage
 }
 
+export interface Settings {
+  jpegQuality: number;
+  pngColors: number;
+  pdfDpi: number;
+  pdfJpegQ: number;
+  officeQuality: number;
+  group: boolean;
+  progressiveJpeg: boolean;
+  stripMetadata: boolean;
+  maxWidth: number;
+  maxHeight: number;
+  convertWebp: boolean;
+  targetSizeKb: number;
+  convertJxl: boolean;
+  jxlLossless: boolean;
+  convertAvif: boolean;
+  autoQuality: boolean;
+  openFolderOnComplete?: boolean;
+}
+
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
@@ -16,3 +36,4 @@ export function formatSize(bytes: number): string {
   const gb = mb / 1024;
   return `${gb.toFixed(1)} GB`;
 }
+
